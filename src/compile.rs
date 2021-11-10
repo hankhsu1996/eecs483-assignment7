@@ -227,8 +227,201 @@ impl<Span> CompileErr<Span> {
     }
 }
 
+fn check_exp<'exp>(
+    e: &'exp Exp<Span1>,
+    env_arg: &Vec<(&'exp str, ())>,
+    mut env_lcl: Vec<(&'exp str, ())>,
+    env_fun: &Vec<(&'exp str, usize)>,
+) -> Result<(), CompileErr<Span1>> {
+    match e {
+        Exp::Num(n, ann) => {
+            if *n >= i64::MIN >> 1 && *n <= i64::MAX >> 1 {
+                Ok(())
+            } else {
+                Err(CompileErr::Overflow {
+                    num: *n,
+                    location: *ann,
+                })
+            }
+        }
+        Exp::Bool(_, _) => Ok(()),
+        Exp::Var(v, span) => {
+            match get(&env_arg, v) {
+                Some(_) => return Ok(()),
+                None => (),
+            };
+            match get(&env_lcl, v) {
+                Some(_) => return Ok(()),
+                None => (),
+            };
+            match get(&env_fun, v) {
+                Some(_) => Err(CompileErr::FunctionUsedAsValue {
+                    function_name: v.to_string(),
+                    location: *span,
+                }),
+                None => Err(CompileErr::UnboundVariable {
+                    unbound: v.to_string(),
+                    location: *span,
+                }),
+            }
+        }
+        Exp::Prim1(_, e, _) => check_exp(e, env_arg, env_lcl.clone(), env_fun),
+        Exp::Prim2(_, e1, e2, _) => {
+            check_exp(e1, env_arg, env_lcl.clone(), env_fun)?;
+            check_exp(e2, env_arg, env_lcl.clone(), env_fun)
+        }
+        Exp::Let {
+            bindings,
+            body,
+            ann,
+        } => {
+            // Check duplicated bindings
+            let mut set = HashSet::new();
+            for (x, _) in bindings {
+                if set.contains(x) {
+                    return Err(CompileErr::DuplicateBinding {
+                        duplicated_name: x.to_string(),
+                        location: *ann,
+                    });
+                } else {
+                    set.insert(x);
+                }
+            }
+
+            // Process bindings
+            for (x, e) in bindings {
+                // Evaluate binding's expression and save to RAX
+                check_exp(e, env_arg, env_lcl.clone(), env_fun)?;
+
+                // Update environment and save RAX to memory
+                env_lcl.push((x, ()));
+            }
+            check_exp(body, env_arg, env_lcl.clone(), env_fun)
+        }
+        Exp::If {
+            cond,
+            thn,
+            els,
+            ann: _,
+        } => {
+            check_exp(cond, env_arg, env_lcl.clone(), env_fun)?;
+            check_exp(thn, env_arg, env_lcl.clone(), env_fun)?;
+            check_exp(els, env_arg, env_lcl.clone(), env_fun)
+        }
+        Exp::Call(name, exps, ann) => {
+            // Check value used as function
+            match get(&env_lcl, name) {
+                Some(_) => {
+                    return Err(CompileErr::ValueUsedAsFunction {
+                        variable_name: name.to_string(),
+                        location: *ann,
+                    })
+                }
+                None => (),
+            };
+            match get(&env_arg, name) {
+                Some(_) => {
+                    return Err(CompileErr::ValueUsedAsFunction {
+                        variable_name: name.to_string(),
+                        location: *ann,
+                    })
+                }
+                None => (),
+            };
+
+            // Check if name in env_fun
+            let arity_call = exps.len();
+            match get(env_fun, name) {
+                Some(arity_def) => {
+                    if arity_def != arity_call {
+                        return Err(CompileErr::FunctionCalledWrongArity {
+                            function_name: name.to_string(),
+                            correct_arity: arity_def,
+                            arity_used: arity_call,
+                            location: *ann,
+                        });
+                    } else {
+                        ()
+                    }
+                }
+                None => {
+                    return Err(CompileErr::UndefinedFunction {
+                        undefined: name.to_string(),
+                        location: *ann,
+                    })
+                }
+            };
+
+            // Recursively call check_exp
+            for e in exps {
+                check_exp(e, env_arg, env_lcl.clone(), env_fun)?;
+            }
+
+            Ok(())
+        }
+    }
+}
+
+fn check_fun<'fun>(
+    fun: &'fun FunDecl<Exp<Span1>, Span1>,
+    env_fun: &mut Vec<(&'fun str, usize)>,
+) -> Result<(), CompileErr<Span1>> {
+    let param_num = fun.parameters.len();
+    match get(env_fun, &fun.name) {
+        Some(_) => {
+            return Err(CompileErr::DuplicateFunName {
+                duplicated_name: fun.name.clone(),
+                location: fun.ann,
+            })
+        }
+        None => {
+            env_fun.push((&fun.name, param_num));
+        }
+    };
+
+    // Check duplicated argument name
+    let mut set = HashSet::new();
+    for x in &fun.parameters {
+        if set.contains(&x) {
+            return Err(CompileErr::DuplicateArgName {
+                duplicated_name: x.to_string(),
+                location: fun.ann,
+            });
+        } else {
+            set.insert(x);
+        }
+    }
+    Ok(())
+}
+
 pub fn check_prog(p: &SurfProg<Span1>) -> Result<(), CompileErr<Span1>> {
-    panic!("NYI")
+    let mut env_fun = vec![];
+
+    for fun in &p.funs {
+        check_fun(fun, &mut env_fun)?;
+    }
+
+    for fun in &p.funs {
+        let env_arg: Vec<(&str, ())> = fun.parameters.iter().map(|p| (&p[..], ())).collect();
+        let env_lcl = vec![];
+        check_exp(&fun.body, &env_arg, env_lcl, &env_fun)?;
+    }
+
+    let env_arg = vec![];
+    let env_lcl = vec![];
+    check_exp(&p.main, &env_arg, env_lcl, &env_fun)
+}
+
+pub fn get<T>(env: &[(&str, T)], x: &str) -> Option<T>
+where
+    T: Copy,
+{
+    for (y, n) in env.iter().rev() {
+        if x == *y {
+            return Some(*n);
+        }
+    }
+    None
 }
 
 fn sequentialize(e: &Exp<u32>) -> SeqExp<()> {
