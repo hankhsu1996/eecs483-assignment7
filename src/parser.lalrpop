@@ -1,0 +1,118 @@
+use std::str::FromStr;
+use crate::syntax::{Prog, FunDecl, SurfProg, SurfFunDecl, Exp, Prim1, Prim2};
+use crate::lexer::Span1;
+
+grammar;
+
+pub Prog: SurfProg<Span1> = {
+    <l: @L> <funs: FunDecl*> <main: Exp> <r: @R> => Prog { funs, main, ann: Span1 { start_ix: l, end_ix: r} }
+}
+
+FunDecl: SurfFunDecl<Span1> = {
+    <l: @L> "def" <name: Id> "(" <parameters: Comma<Id>> ")" ":" <body: Exp> "end" <r: @R> =>
+        FunDecl { name, parameters, body, ann: Span1 { start_ix: l, end_ix: r}  }
+}
+
+pub Exp: Exp<Span1> = {
+    IF,
+    LET,
+    BinOps
+}
+
+IF: Exp<Span1> = {
+    <l: @L> "if" <cond: Exp> ":" <thn: Exp> "else" ":" <els:Exp> <r: @R> =>
+        Exp::If { cond: Box::new(cond), thn: Box::new(thn), els: Box::new(els), ann: Span1 { start_ix: l, end_ix: r }},
+}
+
+LET: Exp<Span1> = {
+    <l: @L> "let" <bindings:Bindings> "in" <body: Exp> <r: @R> => Exp::Let { bindings, body: Box::new(body), ann: Span1 { start_ix: l, end_ix: r }},
+}
+
+
+
+LAssoc<Op, Next>: Exp<Span1> = {
+    <l: @L> <e1: LAssoc<Op,Next>> <op: Op> <e2: Next> <r: @R> => Exp::Prim2(op, Box::new(e1), Box::new(e2), Span1 { start_ix: l, end_ix: r }),
+    Next
+}
+
+RAssoc<Op, Next>: Exp<Span1> = {
+    <l: @L> <e1: Next> <op: Op> <e2: RAssoc<Op, Next>> <r: @R> => Exp::Prim2(op, Box::new(e1), Box::new(e2), Span1 { start_ix: l, end_ix: r }),
+    Next
+}
+
+BinOps = LogExp;
+LogExp = RAssoc<Log, CmpExp>;
+CmpExp = LAssoc<Cmp, Sum>;
+Sum = LAssoc<PlusMinus, Product>;
+Product = LAssoc<Times, NotExp>;
+
+PlusMinus: Prim2 = {
+    "+" => Prim2::Add,
+    "-" => Prim2::Sub,
+}
+
+Times: Prim2 = {
+    "*" => Prim2::Mul
+}
+
+Log: Prim2 = {
+    "&&" => Prim2::And,
+    "||" => Prim2::Or,
+}
+
+Cmp: Prim2 = {
+    "<" => Prim2::Lt,
+    "<=" => Prim2::Le,
+    ">" => Prim2::Gt,
+    ">=" => Prim2::Ge,
+    "==" => Prim2::Eq,
+    "!=" => Prim2::Neq,
+}
+
+NotExp: Exp<Span1> = {
+    <l: @L> "!" <e: BaseExp> <r: @R> => Exp::Prim1(Prim1::Not, Box::new(e), Span1 { start_ix: l, end_ix: r }),
+    BaseExp
+}
+
+BaseExp: Exp<Span1> = {
+    <l: @L> <x: Id> <r: @R> => Exp::Var(x, Span1 { start_ix: l, end_ix: r }),
+    <l: @L> <b: Bool> <r: @R> => Exp::Bool(b, Span1 { start_ix: l, end_ix: r }),
+    <l: @L> <n: Num> <r:@R> => Exp::Num(n, Span1 { start_ix: l, end_ix: r }),
+    <l:@L> <p:Prim1> "(" <e: Exp> ")" <r:@R> => Exp::Prim1(p, Box::new(e), Span1 { start_ix: l, end_ix: r }),
+    "(" <e: Exp> ")" => e,
+    <l: @L> <x: Id> "(" <es: Comma<Exp> > ")" <r: @R> => Exp::Call(x, es, Span1 { start_ix: l, end_ix: r }),
+}
+
+Comma<T>: Vec<T> = {
+    <mut v: (<T> ",")*> <last: T?> => {
+        match last {
+            None => { },
+            Some(t) => { v.push(t); }
+        };
+        v
+    }
+}
+
+Prim1: Prim1 = {
+    "add1" => Prim1::Add1,
+    "sub1" => Prim1::Sub1,
+    "print" => Prim1::Print,
+    "printStack" => Prim1::PrintStack,
+    "isnum" => Prim1::IsNum,
+    "isbool" => Prim1::IsBool,
+}
+
+Bindings: Vec<(String, Exp<Span1>)> = {
+    <x: Id> "=" <e: Exp> => vec![(x, e)],
+    <mut bs:Bindings> "," <x: Id> "=" <e: Exp> => {
+        bs.push((x, e));
+        bs
+    }
+}
+
+Num: i64 = <s:r"[+-]?[0-9]+"> => i64::from_str(s).unwrap();
+Id: String = <s:r"[a-zA-Z][a-zA-Z0-9_]*"> => String::from(s);
+Bool: bool = {
+    "true" => true,
+    "false" => false,
+}

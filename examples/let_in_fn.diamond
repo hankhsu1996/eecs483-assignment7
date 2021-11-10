@@ -1,0 +1,5 @@
+def xyzzy(n):
+  let x = 2 * n, y = x + n in y - 2
+end
+
+xyzzy(4)

@@ -1,0 +1,6 @@
+def min(x, y):
+  let a = print(x), b = print(y) in
+  if x <= y: x
+  else: min(y, x)
+end
+min(12, 10)

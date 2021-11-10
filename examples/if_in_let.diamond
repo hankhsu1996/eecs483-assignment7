@@ -1,0 +1,2 @@
+let x = 10, choice = (if x > 0 : add1(x) else: sub1(x)), double = choice + choice
+in add1(double)

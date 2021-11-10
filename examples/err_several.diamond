@@ -1,0 +1,14 @@
+def even(n):
+  if n == 0 : true else: (if n > 0 : odd(n - 1) else: odd(n + 1))
+end
+
+def odd(n):
+  if n == 0 : false else: (if n > 0 : even() else: even(n + 1))
+end
+
+let ten       = print(even(10)),
+    three     = print(even(3)),
+    zero      = print(even(0)),
+    neg_five  = print(evn(-5)),
+    neg_five  = print(even(-8))
+in (ten && !(three) && zeero && !(neg_five) && neg_eight)

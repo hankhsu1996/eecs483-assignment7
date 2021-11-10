@@ -1,0 +1,7 @@
+def crash_on_bool(n):
+  add1(n)
+end
+
+let x = print(crash_on_bool(100)),
+    y = print(crash_on_bool(true))
+in false

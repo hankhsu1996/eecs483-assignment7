@@ -1,0 +1,14 @@
+def f(x):
+  let n = 2 in
+  n * print(x)
+end
+
+def g(x, y):
+  h(x,y) - f(y)
+end
+
+def h(num, z):
+  if num > 0 : 1 else: (if num < 0 : -1 else: z)
+end
+
+g(4, 5)

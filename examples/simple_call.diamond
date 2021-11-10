@@ -1,0 +1,5 @@
+def f(x):
+  2 * print(x)
+end
+
+f(4 + 5)

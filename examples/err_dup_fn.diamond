@@ -1,0 +1,9 @@
+def foo(x): sub1(2 * x)
+end
+
+def bar(x): add1(2 * x)
+end
+
+def foo(x): 3 * x
+end
+3

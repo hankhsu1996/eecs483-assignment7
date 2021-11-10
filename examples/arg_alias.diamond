@@ -1,0 +1,5 @@
+def min(x, y):
+  if x <= y: x
+  else: min(y, x)
+end
+min(12, 10)

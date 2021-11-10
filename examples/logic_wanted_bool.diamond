@@ -1,0 +1,7 @@
+def crash_on_int(n):
+  false || n
+end
+
+let x = print(crash_on_int(true)),
+    y = print(crash_on_int(10))
+in false

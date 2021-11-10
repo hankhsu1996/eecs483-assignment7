@@ -1,0 +1,2 @@
+let x = 40, y = x + x * 3 in
+if y - 20 : 5 else: 600

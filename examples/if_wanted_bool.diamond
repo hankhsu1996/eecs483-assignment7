@@ -1,0 +1,7 @@
+def crash_on_int(n):
+  if n : 1 else: 0
+end
+
+let x = print(crash_on_int(true)),
+    y = print(crash_on_int(x))
+in false

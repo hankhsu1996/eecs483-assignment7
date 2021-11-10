@@ -1,0 +1,4 @@
+def positive(num): num > 0
+end
+
+if positive(-3) : 1 else: -1

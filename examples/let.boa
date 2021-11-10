@@ -1,0 +1,2 @@
+let x = 3, y = add1(x)
+in add1(y)

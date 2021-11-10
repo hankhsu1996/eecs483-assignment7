@@ -1,0 +1,4 @@
+def fact(n):
+  if n <= 0 : 1 else: n * fact(n - 1)
+end
+let x = print(fact(10)) in fact(100)

@@ -1,0 +1,9 @@
+def f(x):
+  2 * print(x)
+end
+
+def g(x, y):
+  x - f(y)
+end
+
+g(4, 5)

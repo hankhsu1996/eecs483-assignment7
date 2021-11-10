@@ -1,0 +1,4 @@
+def foo(x,y,z):
+  x+y-z
+end
+let x = bar(3,4,5) in 12

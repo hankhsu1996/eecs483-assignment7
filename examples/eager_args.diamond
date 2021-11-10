@@ -1,0 +1,5 @@
+def f(x, y):
+  print(38)
+end
+f(print(18), print(2))
+

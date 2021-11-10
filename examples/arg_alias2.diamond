@@ -1,0 +1,6 @@
+def max(x, y):
+  if y >= x: y
+  else: max(y, x)
+end
+
+max(12, 10)

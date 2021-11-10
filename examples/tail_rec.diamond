@@ -1,0 +1,5 @@
+def peano_sum(n, acc):
+  if n <= 0 : acc else: peano_sum(sub1(n), 1 + acc)
+end
+
+peano_sum(1000000, 1)

@@ -1,0 +1,9 @@
+def even(n):
+  if n == 0 : true else: (if n > 0 : odd(n - 1) else: odd(n + 1))
+end
+
+def odd(n):
+  if n == 0 : false else: (if n > 0 : even(n - 1) else: even(n + 1))
+end
+
+even(1000000)

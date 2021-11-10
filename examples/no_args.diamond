@@ -1,0 +1,8 @@
+def p3():
+  print(3)
+end
+
+let x = p3() in
+let y = x in
+4
+

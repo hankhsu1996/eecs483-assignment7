@@ -1,0 +1,2 @@
+let x = (let q = 4, w = q * 2 in add1(w)), y = x * x
+in add1(y)
