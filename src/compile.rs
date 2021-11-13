@@ -1,15 +1,13 @@
 use crate::asm::{instrs_to_string, GENERAL_PURPOSE_REGISTERS};
 use crate::asm::{Arg32, Arg64, BinArgs, Instr, Loc, MemRef, MovArgs, Reg, Reg32};
+use crate::graph::Graph;
 use crate::lexer::Span1;
 use crate::syntax::{
     add_tag_sprog, tag_prog, tag_sprog, uniquify_names, Exp, FunDecl, ImmExp, Prim1, Prim2, Prog,
     SeqExp, SeqProg, SurfFunDecl, SurfProg,
 };
-
-use crate::graph::Graph;
-
+use itertools::Itertools;
 use std::collections::{HashMap, HashSet};
-use std::convert::TryInto;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CompileErr<Span> {
@@ -69,6 +67,7 @@ pub enum VarLocation {
 
 use std::fmt;
 use std::fmt::Display;
+use std::iter::FromIterator;
 
 impl<Span> Display for CompileErr<Span>
 where
@@ -1106,8 +1105,90 @@ where
     }
 }
 
+fn conflicts_helper<Ann>(
+    e: &SeqExp<(HashSet<String>, Ann)>,
+    mut equivs: Vec<HashSet<String>>,
+    g: &mut Graph<String>,
+) {
+    match e {
+        SeqExp::Imm(_, _) => (),
+        SeqExp::Prim1(_, _, _) => (),
+        SeqExp::Prim2(_, _, _, _) => (),
+        SeqExp::Let {
+            var,
+            bound_exp,
+            body,
+            ann: _,
+        } => {
+            // Update equivs HashSet
+            match &**bound_exp {
+                SeqExp::Imm(imm, _) => match imm {
+                    ImmExp::Var(var2) => {
+                        // var and var2 are equivalent. add to equivs HashSet
+                        let mut found_equiv = false;
+                        for equiv in equivs.iter_mut() {
+                            if equiv.contains(var2) {
+                                assert!(found_equiv == false);
+                                equiv.insert(var.to_string());
+                                found_equiv = true;
+                            }
+                        }
+                        if found_equiv == false {
+                            equivs.push(HashSet::from_iter(vec![var.clone(), var2.clone()]));
+                        }
+                    }
+                    _ => (),
+                },
+                _ => (),
+            }
+            // Get combinations of HashSets in equivs
+            let mut equiv_combs = Vec::new();
+            for equiv in equivs.iter() {
+                for comb_vec in equiv.iter().combinations(2) {
+                    let comb_set: HashSet<&String> = HashSet::from_iter(comb_vec);
+                    equiv_combs.push(comb_set);
+                }
+            }
+
+            // Get body's conflict HashSet
+            let mut conf_combs = Vec::new();
+            let conf_set = body.map_ann(&mut |ann| ann.0.clone()).ann();
+            for comb_vec in conf_set.iter().combinations(2) {
+                let comb_set: HashSet<&String> = HashSet::from_iter(comb_vec);
+                conf_combs.push(comb_set);
+            }
+
+            // Add conflict combinations into graph if it's not in equivalent combinations
+            for conf_comb in conf_combs {
+                if !equiv_combs.contains(&conf_comb) {
+                    let conf_vec = Vec::from_iter(conf_comb);
+                    assert!(conf_vec.len() == 2);
+                    (*g).insert_edge(conf_vec[0].clone(), conf_vec[1].clone());
+                }
+            }
+
+            // Recursively call conflict_helper
+            conflicts_helper(bound_exp, equivs.clone(), g);
+            conflicts_helper(body, equivs, g);
+        }
+
+        SeqExp::If {
+            cond: _,
+            thn,
+            els,
+            ann: _,
+        } => {
+            conflicts_helper(thn, equivs.clone(), g);
+            conflicts_helper(els, equivs, g);
+        }
+        SeqExp::Call(_, _, _) => (),
+    }
+}
+
 pub fn conflicts<Ann>(e: &SeqExp<(HashSet<String>, Ann)>) -> Graph<String> {
-    panic!("NYI")
+    let mut g = Graph::new();
+    conflicts_helper(e, vec![], &mut g);
+    g
 }
 
 pub fn allocate_registers(
