@@ -425,7 +425,237 @@ where
 }
 
 fn sequentialize(e: &Exp<u32>) -> SeqExp<()> {
-    panic!("NYI")
+    match e {
+        Exp::Num(n, _) => SeqExp::Imm(ImmExp::Num(*n), ()),
+        Exp::Bool(b, _) => SeqExp::Imm(ImmExp::Bool(*b), ()),
+        Exp::Var(v, _) => SeqExp::Imm(ImmExp::Var(v.to_string()), ()),
+        Exp::Prim1(prim1, e1, ann) => match &**e1 {
+            Exp::Num(n, _) => SeqExp::Prim1(*prim1, ImmExp::Num(*n), ()),
+            Exp::Bool(b, _) => SeqExp::Prim1(*prim1, ImmExp::Bool(*b), ()),
+            Exp::Var(v, _) => SeqExp::Prim1(*prim1, ImmExp::Var(v.to_owned()), ()),
+            _ => {
+                let s_e1 = sequentialize(e1);
+                let name = format!("#prim1_{}", ann);
+                SeqExp::Let {
+                    var: name.clone(),
+                    bound_exp: Box::new(s_e1),
+                    body: Box::new(SeqExp::Prim1(*prim1, ImmExp::Var(name), ())),
+                    ann: (),
+                }
+            }
+        },
+        Exp::Prim2(prim2, e1, e2, ann) => match &**e1 {
+            Exp::Num(n1, _) => match &**e2 {
+                Exp::Num(n2, _) => SeqExp::Prim2(*prim2, ImmExp::Num(*n1), ImmExp::Num(*n2), ()),
+                Exp::Bool(b2, _) => SeqExp::Prim2(*prim2, ImmExp::Num(*n1), ImmExp::Bool(*b2), ()),
+                Exp::Var(v2, _) => {
+                    SeqExp::Prim2(*prim2, ImmExp::Num(*n1), ImmExp::Var(v2.to_owned()), ())
+                }
+                _ => {
+                    let name2 = format!("#prim2_1_{}", ann);
+                    let s_e2 = sequentialize(e2);
+                    SeqExp::Let {
+                        var: name2.clone(),
+                        bound_exp: Box::new(s_e2),
+                        body: Box::new(SeqExp::Prim2(
+                            *prim2,
+                            ImmExp::Num(*n1),
+                            ImmExp::Var(name2),
+                            (),
+                        )),
+                        ann: (),
+                    }
+                }
+            },
+            Exp::Bool(b1, _) => match &**e2 {
+                Exp::Num(n2, _) => SeqExp::Prim2(*prim2, ImmExp::Bool(*b1), ImmExp::Num(*n2), ()),
+                Exp::Bool(b2, _) => SeqExp::Prim2(*prim2, ImmExp::Bool(*b1), ImmExp::Bool(*b2), ()),
+                Exp::Var(v2, _) => {
+                    SeqExp::Prim2(*prim2, ImmExp::Bool(*b1), ImmExp::Var(v2.to_owned()), ())
+                }
+                _ => {
+                    let name2 = format!("#prim2_1_{}", ann);
+                    let s_e2 = sequentialize(e2);
+                    SeqExp::Let {
+                        var: name2.clone(),
+                        bound_exp: Box::new(s_e2),
+                        body: Box::new(SeqExp::Prim2(
+                            *prim2,
+                            ImmExp::Bool(*b1),
+                            ImmExp::Var(name2),
+                            (),
+                        )),
+                        ann: (),
+                    }
+                }
+            },
+            Exp::Var(v1, _) => match &**e2 {
+                Exp::Num(n2, _) => {
+                    SeqExp::Prim2(*prim2, ImmExp::Var(v1.to_owned()), ImmExp::Num(*n2), ())
+                }
+                Exp::Bool(b2, _) => {
+                    SeqExp::Prim2(*prim2, ImmExp::Var(v1.to_owned()), ImmExp::Bool(*b2), ())
+                }
+                Exp::Var(v2, _) => SeqExp::Prim2(
+                    *prim2,
+                    ImmExp::Var(v1.to_owned()),
+                    ImmExp::Var(v2.to_owned()),
+                    (),
+                ),
+                _ => {
+                    let name2 = format!("#prim2_1_{}", ann);
+                    let s_e2 = sequentialize(e2);
+                    SeqExp::Let {
+                        var: name2.clone(),
+                        bound_exp: Box::new(s_e2),
+                        body: Box::new(SeqExp::Prim2(
+                            *prim2,
+                            ImmExp::Var(v1.to_owned()),
+                            ImmExp::Var(name2),
+                            (),
+                        )),
+                        ann: (),
+                    }
+                }
+            },
+            _ => match &**e2 {
+                Exp::Num(n2, _) => {
+                    let name1 = format!("#prim2_1_{}", ann);
+                    let s_e1 = sequentialize(e1);
+                    SeqExp::Let {
+                        var: name1.clone(),
+                        bound_exp: Box::new(s_e1),
+                        body: Box::new(SeqExp::Prim2(
+                            *prim2,
+                            ImmExp::Var(name1),
+                            ImmExp::Num(*n2),
+                            (),
+                        )),
+                        ann: (),
+                    }
+                }
+                Exp::Bool(b2, _) => {
+                    let name1 = format!("#prim2_1_{}", ann);
+                    let s_e1 = sequentialize(e1);
+                    SeqExp::Let {
+                        var: name1.clone(),
+                        bound_exp: Box::new(s_e1),
+                        body: Box::new(SeqExp::Prim2(
+                            *prim2,
+                            ImmExp::Var(name1),
+                            ImmExp::Bool(*b2),
+                            (),
+                        )),
+                        ann: (),
+                    }
+                }
+                Exp::Var(v2, _) => {
+                    let name1 = format!("#prim2_1_{}", ann);
+                    let s_e1 = sequentialize(e1);
+                    SeqExp::Let {
+                        var: name1.clone(),
+                        bound_exp: Box::new(s_e1),
+                        body: Box::new(SeqExp::Prim2(
+                            *prim2,
+                            ImmExp::Var(name1),
+                            ImmExp::Var(v2.to_owned()),
+                            (),
+                        )),
+                        ann: (),
+                    }
+                }
+                _ => {
+                    let s_e1 = sequentialize(e1);
+                    let s_e2 = sequentialize(e2);
+                    let name1 = format!("#prim2_1_{}", ann);
+                    let name2 = format!("#prim2_2_{}", ann);
+                    SeqExp::Let {
+                        var: name1.clone(),
+                        bound_exp: Box::new(s_e1),
+                        body: Box::new(SeqExp::Let {
+                            var: name2.clone(),
+                            bound_exp: Box::new(s_e2),
+                            body: Box::new(SeqExp::Prim2(
+                                *prim2,
+                                ImmExp::Var(name1),
+                                ImmExp::Var(name2),
+                                (),
+                            )),
+                            ann: (),
+                        }),
+                        ann: (),
+                    }
+                }
+            },
+        },
+        Exp::Let {
+            bindings,
+            body,
+            ann,
+        } => {
+            let mut local_bindings = bindings.clone();
+            let first_binding = local_bindings.remove(0);
+            if local_bindings.len() == 0 {
+                SeqExp::Let {
+                    var: first_binding.0,
+                    bound_exp: Box::new(sequentialize(&first_binding.1)),
+                    body: Box::new(sequentialize(body)),
+                    ann: (),
+                }
+            } else {
+                let new_exp = Exp::Let {
+                    bindings: local_bindings,
+                    body: (*body).clone(),
+                    ann: *ann,
+                };
+                SeqExp::Let {
+                    var: first_binding.0,
+                    bound_exp: Box::new(sequentialize(&first_binding.1)),
+                    body: Box::new(sequentialize(&new_exp)),
+                    ann: (),
+                }
+            }
+        }
+        Exp::If {
+            cond,
+            thn,
+            els,
+            ann,
+        } => {
+            let s_e = sequentialize(cond);
+            let name = format!("#if_{}", ann);
+            SeqExp::Let {
+                var: name.clone(),
+                bound_exp: Box::new(s_e),
+                body: Box::new(SeqExp::If {
+                    cond: ImmExp::Var(name),
+                    thn: Box::new(sequentialize(thn)),
+                    els: Box::new(sequentialize(els)),
+                    ann: (),
+                }),
+                ann: (),
+            }
+        }
+        Exp::Call(name, exps, ann) => {
+            let mut seq_args = vec![];
+            for (i, _) in exps.iter().enumerate() {
+                let arg_name = format!("#call_{}_{}", ann, i);
+                seq_args.push(ImmExp::Var(arg_name));
+            }
+            let seq_call = SeqExp::Call(name.to_string(), seq_args, ());
+            let mut curr = seq_call;
+            for (i, e) in exps.iter().enumerate().rev() {
+                let arg_name = format!("#call_{}_{}", ann, i);
+                curr = SeqExp::Let {
+                    var: arg_name,
+                    bound_exp: Box::new(sequentialize(e)),
+                    body: Box::new(curr),
+                    ann: (),
+                };
+            }
+            curr
+        }
+    }
 }
 
 fn seq_prog(p: &SurfProg<u32>) -> SeqProg<()> {
