@@ -1120,6 +1120,9 @@ fn conflicts_helper<Ann>(
             body,
             ann: _,
         } => {
+            // Insert vertex
+            g.insert_vertex(var.clone());
+
             // Update equivs HashSet
             match &**bound_exp {
                 SeqExp::Imm(imm, _) => match imm {
