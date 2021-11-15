@@ -149,7 +149,11 @@ pub fn imm32_to_string(i: i32) -> String {
 }
 
 pub fn mem_ref_to_string(m: MemRef) -> String {
-    panic!("NYI")
+    if m.offset == 0 {
+        String::from(format!("[{}]", reg_to_string(m.reg)))
+    } else {
+        String::from(format!("[{}{:+}]", reg_to_string(m.reg), m.offset))
+    }
 }
 
 pub fn reg32_to_string(r_or_i: Reg32) -> String {
@@ -207,7 +211,37 @@ pub fn loc_to_string(loc: Loc) -> String {
 }
 
 pub fn instr_to_string(i: &Instr) -> String {
-    panic!("NYI")
+    let indent = " ".repeat(8);
+    match i {
+        Instr::Mov(args) => format!("{}mov {}", indent, mov_args_to_string(*args)),
+        Instr::Add(args) => format!("{}add {}", indent, bin_args_to_string(*args)),
+        Instr::Sub(args) => format!("{}sub {}", indent, bin_args_to_string(*args)),
+        Instr::IMul(args) => format!("{}imul {}", indent, bin_args_to_string(*args)),
+        Instr::And(args) => format!("{}and {}", indent, bin_args_to_string(*args)),
+        Instr::Or(args) => format!("{}or {}", indent, bin_args_to_string(*args)),
+        Instr::Xor(args) => format!("{}xor {}", indent, bin_args_to_string(*args)),
+        Instr::Shr(args) => format!("{}shr {}", indent, bin_args_to_string(*args)),
+        Instr::Sar(args) => format!("{}sar {}", indent, bin_args_to_string(*args)),
+        Instr::Cmp(args) => format!("{}cmp {}", indent, bin_args_to_string(*args)),
+        Instr::Test(args) => format!("{}test {}", indent, bin_args_to_string(*args)),
+        Instr::Push(args) => format!("{}push {}", indent, arg32_to_string(*args)),
+        Instr::Pop(loc) => format!("{}pop {}", indent, loc_to_string(*loc)),
+        Instr::Label(lab) => format!("{}:", lab),
+        Instr::Call(func) => format!("{}call {}", indent, func),
+        Instr::Ret => format!("{}ret", indent),
+        Instr::Jmp(lab) => format!("{}jmp {}", indent, lab),
+        Instr::Je(lab) => format!("{}je {}", indent, lab),
+        Instr::Jne(lab) => format!("{}jne {}", indent, lab),
+        Instr::Jl(lab) => format!("{}jl {}", indent, lab),
+        Instr::Jle(lab) => format!("{}jle {}", indent, lab),
+        Instr::Jg(lab) => format!("{}jg {}", indent, lab),
+        Instr::Jge(lab) => format!("{}jge {}", indent, lab),
+        Instr::Js(lab) => format!("{}js {}", indent, lab),
+        Instr::Jz(lab) => format!("{}jz {}", indent, lab),
+        Instr::Jnz(lab) => format!("{}jnz {}", indent, lab),
+        Instr::Jo(lab) => format!("{}jo {}", indent, lab),
+        Instr::Jno(lab) => format!("{}jno {}", indent, lab),
+    }
 }
 
 pub fn instrs_to_string(is: &[Instr]) -> String {
