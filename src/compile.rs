@@ -1213,6 +1213,8 @@ pub fn allocate_registers(
     // }
     // env
 
+    println!("{:?}", registers);
+
     // Utility
     let mut rng = rand::thread_rng();
     let regs_set: HashSet<&Reg> = HashSet::from_iter(registers);
