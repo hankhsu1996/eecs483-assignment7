@@ -4,10 +4,18 @@ use crate::graph::Graph;
 use crate::lexer::Span1;
 use crate::syntax::{
     add_tag_sprog, tag_prog, tag_sprog, uniquify_names, Exp, FunDecl, ImmExp, Prim1, Prim2, Prog,
-    SeqExp, SeqProg, SurfFunDecl, SurfProg,
+    SeqExp, SeqProg, SurfProg,
 };
 use itertools::Itertools;
 use std::collections::{HashMap, HashSet};
+
+static BOOL_TAG32: u32 = 0x01;
+static BOOL_TAG: u64 = 0x00_00_00_00_00_00_00_01;
+static SNAKE_TRU: u64 = 0xFF_FF_FF_FF_FF_FF_FF_FF;
+static SNAKE_FLS: u64 = 0x7F_FF_FF_FF_FF_FF_FF_FF;
+static BOOL_MASK: u64 = 0x80_00_00_00_00_00_00_00;
+
+const DEBUG_MODE: bool = false;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CompileErr<Span> {
@@ -1196,19 +1204,46 @@ pub fn conflicts<Ann>(e: &SeqExp<(HashSet<String>, Ann)>) -> Graph<String> {
 
 pub fn allocate_registers(
     conflicts: Graph<String>,
-    registers: &[Reg],
+    _: &[Reg],
+    // registers: &[Reg],
 ) -> HashMap<String, VarLocation> {
-    panic!("NYI")
+    let mut env = HashMap::<String, VarLocation>::new();
+    for (i, v) in conflicts.vertices().into_iter().enumerate() {
+        env.insert(v, VarLocation::Spill(i as i32));
+    }
+    env
 }
 
 fn compile_fun(name: &str, params: &[String], body: &SeqExp<(HashSet<String>, u32)>) -> Vec<Instr> {
+    // Prepare local environment
     let conflicted_e = conflicts(body);
+    let env_lcl = allocate_registers(conflicted_e, &GENERAL_PURPOSE_REGISTERS);
 
-    let variable_assignment = allocate_registers(conflicted_e, &GENERAL_PURPOSE_REGISTERS);
-    panic!("NYI: compile_fun")
+    // Prepare argument environment
+    // let env_arg = params.iter().enumerate().map(|(i, p)| (p.as_str(), i as i32)).collect();
+    let mut env_arg = vec![];
+    for (i, p) in params.into_iter().enumerate() {
+        env_arg.push((p.as_str(), i as i32));
+    }
+
+    // Transform annotation
+    let body = body.map_ann(&mut |(_, ann)| *ann);
+
+    // Compile to instructions
+    let mut is = vec![Instr::Label(String::from(name))];
+    is.append(&mut compile_to_instrs(&env_arg, &env_lcl, &body));
+    is
 }
 
 fn compile_main(e: &SeqExp<(HashSet<String>, u32)>) -> Vec<Instr> {
+    // Prepare local environment
+    let conflicted_e = conflicts(e);
+    let env_lcl = allocate_registers(conflicted_e, &GENERAL_PURPOSE_REGISTERS);
+
+    // Transform annotation
+    let e = e.map_ann(&mut |(_, ann)| *ann);
+
+    // Compile to instructions
     let mut is = vec![
         Instr::Label(String::from("start_here")),
         Instr::Mov(MovArgs::ToMem(
@@ -1219,12 +1254,408 @@ fn compile_main(e: &SeqExp<(HashSet<String>, u32)>) -> Vec<Instr> {
             Reg32::Reg(Reg::Rbp),
         )),
     ];
+    is.append(&mut compile_to_instrs(&Vec::new(), &env_lcl, &e));
+    is
+}
 
-    let conflicted_e = conflicts(e);
+fn check_isbool(dest: Reg, lab: &str) -> Vec<Instr> {
+    let mut instrs = vec![];
+    if DEBUG_MODE {
+        return instrs;
+    }
+    instrs.push(Instr::Mov(MovArgs::ToReg(Reg::Rsi, Arg64::Reg(dest))));
+    instrs.push(Instr::Test(BinArgs::ToReg(
+        Reg::Rsi,
+        Arg32::Unsigned(BOOL_TAG32),
+    )));
+    instrs.push(Instr::Jz(lab.to_string()));
+    instrs
+}
 
-    let variable_assignment = allocate_registers(conflicted_e, &GENERAL_PURPOSE_REGISTERS);
+fn check_isnum(dest: Reg, lab: &str) -> Vec<Instr> {
+    let mut instrs = vec![];
+    if DEBUG_MODE {
+        return instrs;
+    }
+    instrs.push(Instr::Mov(MovArgs::ToReg(Reg::Rsi, Arg64::Reg(dest))));
+    instrs.push(Instr::Test(BinArgs::ToReg(
+        Reg::Rsi,
+        Arg32::Unsigned(BOOL_TAG32),
+    )));
+    instrs.push(Instr::Jnz(lab.to_string()));
+    instrs
+}
 
-    panic!("NYI: compile_main")
+fn check_overflow() -> Vec<Instr> {
+    let mut instrs = vec![];
+    if DEBUG_MODE {
+        return instrs;
+    }
+    instrs.push(Instr::Jo("ovfl_error".to_string()));
+    instrs
+}
+
+fn compile_imm<'exp>(
+    imm: &'exp ImmExp,
+    env_arg: &Vec<(&'exp str, i32)>,
+    env_lcl: &HashMap<String, VarLocation>,
+    dest: Reg,
+) -> Vec<Instr> {
+    match imm {
+        ImmExp::Num(n) => vec![Instr::Mov(MovArgs::ToReg(dest, Arg64::Signed(*n << 1)))],
+        &ImmExp::Bool(b) => match b {
+            true => vec![Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU)))],
+            false => vec![Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS)))],
+        },
+        ImmExp::Var(v) => {
+            match env_lcl.get(v) {
+                Some(vl) => match vl {
+                    VarLocation::Reg(_) => todo!(),
+                    VarLocation::Spill(n) => {
+                        return vec![Instr::Mov(MovArgs::ToReg(
+                            dest,
+                            Arg64::Mem(MemRef {
+                                reg: Reg::Rbp,
+                                offset: (n + 1) * (-8),
+                            }),
+                        ))]
+                    }
+                },
+                None => (),
+            };
+            match get(&env_arg, v) {
+                Some(n) => {
+                    vec![Instr::Mov(MovArgs::ToReg(
+                        dest,
+                        Arg64::Mem(MemRef {
+                            reg: Reg::Rbp,
+                            offset: (n + 3) * 8,
+                        }),
+                    ))]
+                }
+                None => panic!("Cannot get variable"),
+            }
+        }
+    }
+}
+
+fn compile_with_env<'exp>(
+    e: &'exp SeqExp<u32>,
+    env_arg: &Vec<(&'exp str, i32)>,
+    env_lcl: &HashMap<String, VarLocation>,
+    dest: Reg,
+    is_tail: bool,
+) -> Vec<Instr> {
+    match e {
+        SeqExp::Imm(imm, _) => compile_imm(imm, env_arg, env_lcl, dest),
+        SeqExp::Prim1(prim1, imm, ann) => {
+            let mut instrs = compile_imm(imm, env_arg, env_lcl, dest);
+            match prim1 {
+                Prim1::Add1 => {
+                    instrs.append(&mut check_isnum(dest, "arith_error"));
+                    instrs.push(Instr::Add(BinArgs::ToReg(dest, Arg32::Signed(1 << 1))));
+                    instrs.append(&mut check_overflow());
+                }
+                Prim1::Sub1 => {
+                    instrs.append(&mut check_isnum(dest, "arith_error"));
+                    instrs.push(Instr::Sub(BinArgs::ToReg(dest, Arg32::Signed(1 << 1))));
+                    instrs.append(&mut check_overflow());
+                }
+                Prim1::Not => {
+                    assert!(dest != Reg::R15);
+                    instrs.append(&mut check_isbool(dest, "logic_error"));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(
+                        Reg::R15,
+                        Arg64::Unsigned(BOOL_MASK),
+                    )));
+                    instrs.push(Instr::Xor(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                }
+                Prim1::Print => {
+                    // mov rdi, rax
+                    // call print_snake_val
+                    instrs.push(Instr::Mov(MovArgs::ToReg(Reg::Rdi, Arg64::Reg(dest))));
+                    instrs.push(Instr::Call("print_snake_val".to_string()));
+                }
+                Prim1::IsBool => {
+                    //     mov r15, bool_tag
+                    //     test rax, r15
+                    //     mov rax, true
+                    //     jnz isbool
+                    //     mov rax, false
+                    // isbool:
+                    let isbool_lab = format!("isbool#{}", ann);
+                    instrs.push(Instr::Mov(MovArgs::ToReg(
+                        Reg::R15,
+                        Arg64::Unsigned(BOOL_TAG),
+                    )));
+                    instrs.push(Instr::Test(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
+                    instrs.push(Instr::Jnz(isbool_lab.clone()));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
+                    instrs.push(Instr::Label(isbool_lab));
+                }
+                Prim1::IsNum => {
+                    //     mov r15, bool_tag
+                    //     test rax, r15
+                    //     mov rax, true
+                    //     jz isnum
+                    //     mov rax, false
+                    // isnum:
+                    let isnum_lab = format!("isnum#{}", ann);
+                    instrs.push(Instr::Mov(MovArgs::ToReg(
+                        Reg::R15,
+                        Arg64::Unsigned(BOOL_TAG),
+                    )));
+                    instrs.push(Instr::Test(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
+                    instrs.push(Instr::Jz(isnum_lab.clone()));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
+                    instrs.push(Instr::Label(isnum_lab));
+                }
+                Prim1::PrintStack => todo!(),
+            }
+            instrs
+        }
+        SeqExp::Prim2(prim2, imm1, imm2, ann) => {
+            assert!(dest != Reg::R15);
+
+            // Compile imm1 with destination register RAX
+            let mut instrs = compile_imm(imm1, env_arg, env_lcl, dest);
+
+            // Compile imm2 with destination register R15
+            instrs.append(&mut compile_imm(imm2, env_arg, env_lcl, Reg::R15));
+
+            match prim2 {
+                Prim2::Add => {
+                    instrs.append(&mut check_isnum(dest, "arith_error"));
+                    instrs.append(&mut check_isnum(Reg::R15, "arith_error"));
+                    instrs.push(Instr::Add(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    instrs.append(&mut check_overflow());
+                }
+                Prim2::Sub => {
+                    instrs.append(&mut check_isnum(dest, "arith_error"));
+                    instrs.append(&mut check_isnum(Reg::R15, "arith_error"));
+                    instrs.push(Instr::Sub(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    instrs.append(&mut check_overflow());
+                }
+                Prim2::Mul => {
+                    instrs.append(&mut check_isnum(dest, "arith_error"));
+                    instrs.append(&mut check_isnum(Reg::R15, "arith_error"));
+                    instrs.push(Instr::Sar(BinArgs::ToReg(dest, Arg32::Signed(1))));
+                    instrs.push(Instr::IMul(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    instrs.append(&mut check_overflow());
+                }
+                Prim2::And => {
+                    instrs.append(&mut check_isbool(dest, "logic_error"));
+                    instrs.append(&mut check_isbool(Reg::R15, "logic_error"));
+                    instrs.push(Instr::And(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                }
+                Prim2::Or => {
+                    instrs.append(&mut check_isbool(dest, "logic_error"));
+                    instrs.append(&mut check_isbool(Reg::R15, "logic_error"));
+                    instrs.push(Instr::Or(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                }
+                Prim2::Lt => {
+                    let lt_lab = format!("lt#{}", ann);
+                    instrs.append(&mut check_isnum(dest, "cmp_error"));
+                    instrs.append(&mut check_isnum(Reg::R15, "cmp_error"));
+                    instrs.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
+                    instrs.push(Instr::Jl(lt_lab.clone()));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
+                    instrs.push(Instr::Label(lt_lab));
+                }
+                Prim2::Gt => {
+                    let gt_lab = format!("gt#{}", ann);
+                    instrs.append(&mut check_isnum(dest, "cmp_error"));
+                    instrs.append(&mut check_isnum(Reg::R15, "cmp_error"));
+                    instrs.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
+                    instrs.push(Instr::Jg(gt_lab.clone()));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
+                    instrs.push(Instr::Label(gt_lab));
+                }
+                Prim2::Le => {
+                    let le_lab = format!("le#{}", ann);
+                    instrs.append(&mut check_isnum(dest, "cmp_error"));
+                    instrs.append(&mut check_isnum(Reg::R15, "cmp_error"));
+                    instrs.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
+                    instrs.push(Instr::Jle(le_lab.clone()));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
+                    instrs.push(Instr::Label(le_lab));
+                }
+                Prim2::Ge => {
+                    let ge_lab = format!("ge#{}", ann);
+                    instrs.append(&mut check_isnum(dest, "cmp_error"));
+                    instrs.append(&mut check_isnum(Reg::R15, "cmp_error"));
+                    instrs.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
+                    instrs.push(Instr::Jge(ge_lab.clone()));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
+                    instrs.push(Instr::Label(ge_lab));
+                }
+                Prim2::Eq => {
+                    let eq_lab = format!("eq#{}", ann);
+                    instrs.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
+                    instrs.push(Instr::Je(eq_lab.clone()));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
+                    instrs.push(Instr::Label(eq_lab));
+                }
+                Prim2::Neq => {
+                    let neq_lab = format!("neq#{}", ann);
+                    instrs.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
+                    instrs.push(Instr::Jne(neq_lab.clone()));
+                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
+                    instrs.push(Instr::Label(neq_lab));
+                }
+            };
+            instrs
+        }
+        SeqExp::Let {
+            var,
+            bound_exp,
+            body,
+            ann: _,
+        } => {
+            let mut instrs = compile_with_env(bound_exp, env_arg, env_lcl, dest, false);
+
+            // Save RAX to stack memory or registers
+            match env_lcl.get(var) {
+                Some(vl) => match vl {
+                    VarLocation::Reg(r) => {
+                        instrs.push(Instr::Mov(MovArgs::ToReg(*r, Arg64::Reg(dest))));
+                    }
+                    VarLocation::Spill(n) => {
+                        instrs.push(Instr::Mov(MovArgs::ToMem(
+                            MemRef {
+                                reg: Reg::Rbp,
+                                offset: (n + 1) * (-8),
+                            },
+                            Reg32::Reg(dest),
+                        )));
+                    }
+                },
+                None => panic!("Cannot get var location from env_lcl"),
+            }
+
+            instrs.append(&mut compile_with_env(body, env_arg, env_lcl, dest, is_tail));
+            instrs
+        }
+        SeqExp::If {
+            cond,
+            thn,
+            els,
+            ann,
+        } => {
+            let else_lab = format!("if_false#{}", ann);
+            let done_lab = format!("done#{}", ann);
+
+            // Move cond to RAX
+            let mut is = compile_imm(cond, env_arg, env_lcl, dest);
+
+            // Check RAX is boolean
+            is.append(&mut check_isbool(dest, "cond_error"));
+
+            // Test RAX's MSB
+            is.push(Instr::Mov(MovArgs::ToReg(
+                Reg::R15,
+                Arg64::Unsigned(BOOL_MASK),
+            )));
+            is.push(Instr::Test(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+
+            // Jump to false
+            is.push(Instr::Jz(else_lab.clone()));
+
+            // Compile then expression
+            is.extend(compile_with_env(thn, env_arg, env_lcl, dest, is_tail));
+
+            // Jump to done
+            is.push(Instr::Jmp(done_lab.clone()));
+
+            // False label
+            is.push(Instr::Label(else_lab));
+
+            // Compile else expression
+            is.extend(compile_with_env(els, env_arg, env_lcl, dest, is_tail));
+
+            // Done label
+            is.push(Instr::Label(done_lab));
+
+            is
+        }
+        SeqExp::Call(name, imms, _) => {
+            let mut is = vec![];
+
+            // Count callee and caller's #args
+            let callee_arg_num = imms.len();
+            let caller_arg_num = env_arg.len();
+
+            if is_tail && callee_arg_num <= caller_arg_num {
+                // Overwrite our parameters with the callee's parameters
+                for (i, imm) in imms.iter().enumerate() {
+                    is.append(&mut compile_imm(imm, env_arg, env_lcl, dest));
+                    is.push(Instr::Mov(MovArgs::ToMem(
+                        MemRef {
+                            reg: Reg::Rbp,
+                            offset: (i as i32 + 3) * 8,
+                        },
+                        Reg32::Reg(Reg::Rax),
+                    )));
+                }
+                // Make the stack pointer point at base pointer
+                is.push(Instr::Mov(MovArgs::ToReg(Reg::Rsp, Arg64::Reg(Reg::Rbp))));
+                // Restore R15 and Rbp
+                is.push(Instr::Pop(Loc::Reg(Reg::R15)));
+                is.push(Instr::Pop(Loc::Reg(Reg::Rbp)));
+                // Jump to the function
+                is.push(Instr::Jmp(name.to_string()));
+            } else {
+                let offset = -8 * imms.len() as i32;
+                for imm in imms.iter().rev() {
+                    is.append(&mut compile_imm(imm, env_arg, env_lcl, dest));
+                    is.push(Instr::Push(Arg32::Reg(dest)));
+                }
+                is.push(Instr::Call(name.to_string()));
+                is.push(Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Signed(offset))));
+            }
+            is
+        }
+    }
+}
+
+fn compile_to_instrs<'exp>(
+    env_arg: &Vec<(&'exp str, i32)>,
+    env_lcl: &HashMap<String, VarLocation>,
+    e: &SeqExp<u32>,
+) -> Vec<Instr> {
+    let space_lcl = env_lcl
+        .values()
+        .filter(|v| matches!(v, VarLocation::Spill(_)))
+        .count() as i32;
+    let space;
+    if env_arg.len() % 2 == 0 {
+        space = space_lcl / 2 * 2 + 1;
+    } else {
+        space = (space_lcl + 1) / 2 * 2;
+    }
+
+    let mut instrs = vec![];
+    instrs.push(Instr::Push(Arg32::Reg(Reg::Rbp)));
+    instrs.push(Instr::Push(Arg32::Reg(Reg::R15)));
+    instrs.push(Instr::Mov(MovArgs::ToReg(Reg::Rbp, Arg64::Reg(Reg::Rsp))));
+    instrs.push(Instr::Sub(BinArgs::ToReg(
+        Reg::Rsp,
+        Arg32::Signed(space * 8),
+    )));
+    instrs.append(&mut compile_with_env(e, env_arg, env_lcl, Reg::Rax, true));
+    instrs.push(Instr::Mov(MovArgs::ToReg(Reg::Rsp, Arg64::Reg(Reg::Rbp))));
+    instrs.push(Instr::Pop(Loc::Reg(Reg::R15)));
+    instrs.push(Instr::Pop(Loc::Reg(Reg::Rbp)));
+    instrs.push(Instr::Ret);
+    instrs
 }
 
 pub fn compile_to_string(p: &SurfProg<Span1>) -> Result<String, CompileErr<Span1>> {
@@ -1232,6 +1663,49 @@ pub fn compile_to_string(p: &SurfProg<Span1>) -> Result<String, CompileErr<Span1
     let seq_p: Prog<SeqExp<(HashSet<String>, u32)>, u32> = add_tag_sprog(&liveness_p(
         &uniquify_names(&tag_sprog(&seq_prog(&tag_prog(p)))),
     ));
+    let mut instrs = Vec::<Instr>::new();
 
-    panic!("TODO: compile functions and main")
+    for fun in seq_p.funs {
+        // let conf_g = conflicts(&fun.body);
+        // let env_lcl = allocate_registers(conf_g, &GENERAL_PURPOSE_REGISTERS);
+        // let mut fun_instrs = compile_to_instrs(&fun.name, &env_arg, &fun.body);
+        let mut fun_instrs = compile_fun(&fun.name, &fun.parameters, &fun.body);
+        instrs.append(&mut fun_instrs);
+    }
+
+    instrs.append(&mut compile_main(&seq_p.main));
+    // Overflow = 0,
+    // ArithExpectedNum = 1,
+    // CmpExpectedNum = 2,
+    // LogExpectedBool = 3,
+    // IfExpectedBool = 4,
+    Ok(format!(
+        "\
+        section .text
+        global start_here
+        extern snake_error, print_snake_val
+{}
+
+ovfl_error:
+        mov rdi, 0
+        call snake_error
+
+arith_error:
+        mov rdi, 1
+        call snake_error
+
+cmp_error:
+        mov rdi, 2
+        call snake_error
+
+logic_error:
+        mov rdi, 3
+        call snake_error
+
+cond_error:
+        mov rdi, 4
+        call snake_error
+",
+        instrs_to_string(&instrs)
+    ))
 }
