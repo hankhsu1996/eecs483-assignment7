@@ -25,15 +25,15 @@ pub enum Reg {
 // r15 (reserved for heap pointer)
 
 // This order puts the caller-save registers first
-pub static GENERAL_PURPOSE_REGISTERS: [Reg; 10] = [
-    Reg::Rdx,
-    Reg::Rcx,
-    Reg::Rsi,
-    Reg::Rdi,
-    Reg::R8,
-    Reg::R9,
-    Reg::R10,
-    Reg::R11,
+pub static GENERAL_PURPOSE_REGISTERS: [Reg; 2] = [
+    // Reg::Rdx,
+    // Reg::Rcx,
+    // Reg::Rsi,
+    // Reg::Rdi,
+    // Reg::R8,
+    // Reg::R9,
+    // Reg::R10,
+    // Reg::R11,
     Reg::Rbx,
     Reg::R12,
 ];

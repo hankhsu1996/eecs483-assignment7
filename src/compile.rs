@@ -7,6 +7,7 @@ use crate::syntax::{
     SeqExp, SeqProg, SurfProg,
 };
 use itertools::Itertools;
+use rand::seq::SliceRandom;
 use std::collections::{HashMap, HashSet};
 
 static BOOL_TAG32: u32 = 0x01;
@@ -1203,13 +1204,88 @@ pub fn conflicts<Ann>(e: &SeqExp<(HashSet<String>, Ann)>) -> Graph<String> {
 }
 
 pub fn allocate_registers(
-    conflicts: Graph<String>,
-    _: &[Reg],
-    // registers: &[Reg],
+    mut conflicts: Graph<String>,
+    registers: &[Reg],
 ) -> HashMap<String, VarLocation> {
+    // let mut env = HashMap::<String, VarLocation>::new();
+    // for (i, v) in conflicts.vertices().into_iter().enumerate() {
+    //     env.insert(v, VarLocation::Spill(i as i32));
+    // }
+    // env
+
+    // Utility
+    let mut rng = rand::thread_rng();
+    let regs_set: HashSet<&Reg> = HashSet::from_iter(registers);
+
+    // Initialize env
+    let mut spill_cnt = 0;
     let mut env = HashMap::<String, VarLocation>::new();
-    for (i, v) in conflicts.vertices().into_iter().enumerate() {
-        env.insert(v, VarLocation::Spill(i as i32));
+
+    // Find vertices that has edges more than the number of available registers
+    let reg_num = registers.len();
+    loop {
+        match conflicts
+            .vertices()
+            .into_iter()
+            .find(|v| conflicts.neighbors(&v).unwrap().len() >= reg_num)
+        {
+            Some(vtx) => {
+                conflicts.remove_vertex(&vtx);
+                env.insert(vtx, VarLocation::Spill(spill_cnt));
+                spill_cnt += 1;
+            }
+            None => break,
+        };
+    }
+
+    // While G cannot be R-colored
+    //     While graph G has a node N with degree less than R
+    //         Remove N and its associated edges from G and push N on a stack S
+    //     End While
+    //
+    //     While stack S contains a node N
+    //         Add N to graph G and assign it a color from the R colors
+    //         If failed, Simplify the graph G by choosing an object to spill and remove its node N from G
+    //         (spill nodes are chosen based on object’s number of definitions and references)
+    //         break the while
+    //     End while
+    // End While
+
+    // Try to color the graph
+    loop {
+        let mut curr_map: HashMap<String, Reg> = HashMap::new();
+
+        // (Remove vertices and) push onto the stack
+        let mut stack = conflicts.vertices();
+        stack.shuffle(&mut rng);
+
+        for v in stack {
+            let used_regs = match conflicts.neighbors(&v) {
+                Some(nbrs) => nbrs
+                    .into_iter()
+                    .map(|nbr| curr_map.get(nbr).unwrap_or(&Reg::Rax))
+                    .collect(),
+                None => HashSet::new(),
+            };
+            match regs_set
+                .difference(&used_regs)
+                .into_iter()
+                .map(|reg| *reg.clone())
+                .collect::<Vec<Reg>>()
+                .choose(&mut rng)
+            {
+                Some(reg) => {
+                    curr_map.insert(v, *reg);
+                }
+                None => break,
+            }
+        }
+
+        // Merge
+        for (k, v) in curr_map {
+            env.insert(k, VarLocation::Reg(v));
+        }
+        break;
     }
     env
 }
@@ -1310,7 +1386,9 @@ fn compile_imm<'exp>(
         ImmExp::Var(v) => {
             match env_lcl.get(v) {
                 Some(vl) => match vl {
-                    VarLocation::Reg(_) => todo!(),
+                    VarLocation::Reg(reg) => {
+                        return vec![Instr::Mov(MovArgs::ToReg(dest, Arg64::Reg(*reg)))]
+                    }
                     VarLocation::Spill(n) => {
                         return vec![Instr::Mov(MovArgs::ToReg(
                             dest,
@@ -1666,19 +1744,11 @@ pub fn compile_to_string(p: &SurfProg<Span1>) -> Result<String, CompileErr<Span1
     let mut instrs = Vec::<Instr>::new();
 
     for fun in seq_p.funs {
-        // let conf_g = conflicts(&fun.body);
-        // let env_lcl = allocate_registers(conf_g, &GENERAL_PURPOSE_REGISTERS);
-        // let mut fun_instrs = compile_to_instrs(&fun.name, &env_arg, &fun.body);
         let mut fun_instrs = compile_fun(&fun.name, &fun.parameters, &fun.body);
         instrs.append(&mut fun_instrs);
     }
 
     instrs.append(&mut compile_main(&seq_p.main));
-    // Overflow = 0,
-    // ArithExpectedNum = 1,
-    // CmpExpectedNum = 2,
-    // LogExpectedBool = 3,
-    // IfExpectedBool = 4,
     Ok(format!(
         "\
         section .text

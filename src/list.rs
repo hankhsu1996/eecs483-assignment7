@@ -4,7 +4,7 @@ use std::rc::Rc;
 pub struct List<T>(Option<Rc<(T, List<T>)>>);
 
 impl<T> List<T> {
-    pub fn push(&mut self, x: T) {
+    pub fn _push(&mut self, x: T) {
         *self = List(Some(Rc::new((x, (*self).clone()))))
     }
 
@@ -12,7 +12,7 @@ impl<T> List<T> {
         List(Some(Rc::new((x, self))))
     }
 
-    pub fn iter(&self) -> Self {
+    pub fn _iter(&self) -> Self {
         self.clone()
     }
 

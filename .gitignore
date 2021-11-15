@@ -1,6 +1,7 @@
 target/
 *.s
 *.a
+*.o
 *.exe
 *.lib
 /Cargo.lock
