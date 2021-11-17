@@ -117,6 +117,18 @@ impl<Ann> Exp<Ann> {
         }
     }
 
+    pub fn ann_ref(&self) -> &Ann {
+        match self {
+            Exp::Num(_, a) | Exp::Bool(_, a) => a,
+            Exp::Var(_, a) => a,
+            Exp::Prim1(_, _, a) => a,
+            Exp::Prim2(_, _, _, a) => a,
+            Exp::Let { ann: a, .. } => a,
+            Exp::If { ann: a, .. } => a,
+            Exp::Call(_, _, a) => a,
+        }
+    }
+
     pub fn ann_mut(&mut self) -> &mut Ann {
         match self {
             Exp::Num(_, a) | Exp::Bool(_, a) => a,
@@ -185,6 +197,17 @@ impl<Ann> SeqExp<Ann> {
             SeqExp::Let { ann: a, .. } => a.clone(),
             SeqExp::If { ann: a, .. } => a.clone(),
             SeqExp::Call(_, _, a) => a.clone(),
+        }
+    }
+
+    pub fn ann_ref(&self) -> &Ann {
+        match self {
+            SeqExp::Imm(_, a) => a,
+            SeqExp::Prim1(_, _, a) => a,
+            SeqExp::Prim2(_, _, _, a) => a,
+            SeqExp::Let { ann: a, .. } => a,
+            SeqExp::If { ann: a, .. } => a,
+            SeqExp::Call(_, _, a) => a,
         }
     }
 

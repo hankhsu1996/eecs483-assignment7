@@ -1213,8 +1213,6 @@ pub fn allocate_registers(
     // }
     // env
 
-    println!("{:?}", registers);
-
     // Utility
     let mut rng = rand::thread_rng();
     let regs_set: HashSet<&Reg> = HashSet::from_iter(registers);
@@ -1322,16 +1320,7 @@ fn compile_main(e: &SeqExp<(HashSet<String>, u32)>) -> Vec<Instr> {
     let e = e.map_ann(&mut |(_, ann)| *ann);
 
     // Compile to instructions
-    let mut is = vec![
-        Instr::Label(String::from("start_here")),
-        Instr::Mov(MovArgs::ToMem(
-            MemRef {
-                reg: Reg::Rdi,
-                offset: 0,
-            },
-            Reg32::Reg(Reg::Rbp),
-        )),
-    ];
+    let mut is = vec![Instr::Label(String::from("start_here"))];
     is.append(&mut compile_to_instrs(&Vec::new(), &env_lcl, &e));
     is
 }
