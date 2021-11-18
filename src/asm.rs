@@ -24,19 +24,28 @@ pub enum Reg {
 // r13-r14 (scratch registers)
 // r15 (reserved for heap pointer)
 
+/*
+    Based on Microsoft x64 calling convention:
+        The registers RAX, RCX, RDX, R8, R9, R10, R11 are considered volatile (caller-saved).
+        The registers RBX, RBP, RDI, RSI, RSP, R12, R13, R14, and R15 are considered nonvolatile (callee-saved).
+    Based on System V AMD64 ABI calling convention (used in Linux):
+        The registers RBX, RSP, RBP, and R12–R15 are callee-saved
+*/
 // This order puts the caller-save registers first
-pub static GENERAL_PURPOSE_REGISTERS: [Reg; 2] = [
-    // Reg::Rdx,
-    // Reg::Rcx,
-    // Reg::Rsi,
-    // Reg::Rdi,
-    // Reg::R8,
-    // Reg::R9,
-    // Reg::R10,
-    // Reg::R11,
+pub static GENERAL_PURPOSE_REGISTERS: [Reg; 10] = [
+    Reg::Rdx,
+    Reg::Rcx,
+    Reg::Rsi,
+    Reg::Rdi,
+    Reg::R8,
+    Reg::R9,
+    Reg::R10,
+    Reg::R11,
     Reg::Rbx,
     Reg::R12,
 ];
+
+pub static CALLEE_SAVED_REGISTERS: [Reg; 2] = [Reg::Rbx, Reg::R12];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MemRef {

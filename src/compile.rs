@@ -1,4 +1,4 @@
-use crate::asm::{instrs_to_string, GENERAL_PURPOSE_REGISTERS};
+use crate::asm::{instrs_to_string, CALLEE_SAVED_REGISTERS, GENERAL_PURPOSE_REGISTERS};
 use crate::asm::{Arg32, Arg64, BinArgs, Instr, Loc, MemRef, MovArgs, Reg, Reg32};
 use crate::graph::Graph;
 use crate::lexer::Span1;
@@ -651,6 +651,7 @@ fn sequentialize(e: &Exp<u32>) -> SeqExp<()> {
                 seq_args.push(ImmExp::Var(arg_name));
             }
             let seq_call = SeqExp::Call(name.to_string(), seq_args, ());
+            // TODO: Remove redundant let expression if e is Exp::Imm
             let mut curr = seq_call;
             for (i, e) in exps.iter().enumerate().rev() {
                 let arg_name = format!("#call_{}_{}", ann, i);
@@ -1326,40 +1327,38 @@ fn compile_main(e: &SeqExp<(HashSet<String>, u32)>) -> Vec<Instr> {
 }
 
 fn check_isbool(dest: Reg, lab: &str) -> Vec<Instr> {
-    let mut instrs = vec![];
+    let mut is = Vec::<Instr>::new();
     if DEBUG_MODE {
-        return instrs;
+        return is;
     }
-    instrs.push(Instr::Mov(MovArgs::ToReg(Reg::Rsi, Arg64::Reg(dest))));
-    instrs.push(Instr::Test(BinArgs::ToReg(
-        Reg::Rsi,
+    is.push(Instr::Test(BinArgs::ToReg(
+        dest,
         Arg32::Unsigned(BOOL_TAG32),
     )));
-    instrs.push(Instr::Jz(lab.to_string()));
-    instrs
+    is.push(Instr::Jz(lab.to_string()));
+    is
 }
 
 fn check_isnum(dest: Reg, lab: &str) -> Vec<Instr> {
-    let mut instrs = vec![];
+    let mut is = Vec::<Instr>::new();
     if DEBUG_MODE {
-        return instrs;
+        return is;
     }
-    instrs.push(Instr::Mov(MovArgs::ToReg(Reg::Rsi, Arg64::Reg(dest))));
-    instrs.push(Instr::Test(BinArgs::ToReg(
-        Reg::Rsi,
+    is.push(Instr::Test(BinArgs::ToReg(
+        dest,
         Arg32::Unsigned(BOOL_TAG32),
     )));
-    instrs.push(Instr::Jnz(lab.to_string()));
-    instrs
+    is.push(Instr::Jnz(lab.to_string()));
+    is
 }
 
 fn check_overflow() -> Vec<Instr> {
-    let mut instrs = vec![];
+    let mut is = Vec::<Instr>::new();
     if DEBUG_MODE {
-        return instrs;
+        return is;
     }
-    instrs.push(Instr::Jo("ovfl_error".to_string()));
-    instrs
+    is.push(Instr::Jo("ovfl_error".to_string()));
+    is
 }
 
 fn compile_imm<'exp>(
@@ -1398,7 +1397,9 @@ fn compile_imm<'exp>(
                         dest,
                         Arg64::Mem(MemRef {
                             reg: Reg::Rbp,
-                            offset: (n + 3) * 8,
+                            // TODO: automatically determine the offset based on
+                            // how many callee-saved regs are pushed on the stack
+                            offset: (n + 5) * 8,
                         }),
                     ))]
                 }
@@ -1406,6 +1407,55 @@ fn compile_imm<'exp>(
             }
         }
     }
+}
+
+fn compile_caller_saved(env_lcl: &HashMap<String, VarLocation>) -> (Vec<Instr>, Vec<Instr>) {
+    // TODO: not all caller saved register are assigned before the function call
+    // Consider using HashSet to perform difference
+    let mut is_push = Vec::<Instr>::new();
+    let mut is_pop = Vec::<Instr>::new();
+
+    let mut caller_saved_regs: Vec<Reg> = env_lcl
+        .into_iter()
+        .filter_map(|(_, vl)| match vl {
+            VarLocation::Reg(r) => Some(r.clone()),
+            VarLocation::Spill(_) => None,
+        })
+        .filter(|r| !CALLEE_SAVED_REGISTERS.contains(r))
+        .collect();
+    let regs_odd = caller_saved_regs.len() % 2 == 1;
+
+    for r in caller_saved_regs.clone() {
+        is_push.push(Instr::Push(Arg32::Reg(r)));
+    }
+    if regs_odd {
+        is_push.push(Instr::Push(Arg32::Signed(0)));
+    }
+
+    if regs_odd {
+        is_pop.push(Instr::Add(BinArgs::ToReg(Reg::Rsp, Arg32::Signed(8))));
+    }
+    caller_saved_regs.reverse();
+    for r in caller_saved_regs {
+        is_pop.push(Instr::Pop(Loc::Reg(r)));
+    }
+
+    (is_push, is_pop)
+}
+
+fn compile_callee_saved() -> (Vec<Instr>, Vec<Instr>) {
+    // TODO: pass in used variables, no necessary to push/pop R12 and Rbx
+    let mut is_push = Vec::<Instr>::new();
+    let mut is_pop = Vec::<Instr>::new();
+    is_push.push(Instr::Push(Arg32::Reg(Reg::Rbx)));
+    is_push.push(Instr::Push(Arg32::Reg(Reg::R12)));
+    is_push.push(Instr::Push(Arg32::Reg(Reg::Rbp)));
+    is_push.push(Instr::Push(Arg32::Reg(Reg::R15)));
+    is_pop.push(Instr::Pop(Loc::Reg(Reg::R15)));
+    is_pop.push(Instr::Pop(Loc::Reg(Reg::Rbp)));
+    is_pop.push(Instr::Pop(Loc::Reg(Reg::R12)));
+    is_pop.push(Instr::Pop(Loc::Reg(Reg::Rbx)));
+    (is_push, is_pop)
 }
 
 fn compile_with_env<'exp>(
@@ -1418,170 +1468,159 @@ fn compile_with_env<'exp>(
     match e {
         SeqExp::Imm(imm, _) => compile_imm(imm, env_arg, env_lcl, dest),
         SeqExp::Prim1(prim1, imm, ann) => {
-            let mut instrs = compile_imm(imm, env_arg, env_lcl, dest);
+            let mut is = compile_imm(imm, env_arg, env_lcl, dest);
             match prim1 {
                 Prim1::Add1 => {
-                    instrs.append(&mut check_isnum(dest, "arith_error"));
-                    instrs.push(Instr::Add(BinArgs::ToReg(dest, Arg32::Signed(1 << 1))));
-                    instrs.append(&mut check_overflow());
+                    is.append(&mut check_isnum(dest, "arith_error"));
+                    is.push(Instr::Add(BinArgs::ToReg(dest, Arg32::Signed(1 << 1))));
+                    is.append(&mut check_overflow());
                 }
                 Prim1::Sub1 => {
-                    instrs.append(&mut check_isnum(dest, "arith_error"));
-                    instrs.push(Instr::Sub(BinArgs::ToReg(dest, Arg32::Signed(1 << 1))));
-                    instrs.append(&mut check_overflow());
+                    is.append(&mut check_isnum(dest, "arith_error"));
+                    is.push(Instr::Sub(BinArgs::ToReg(dest, Arg32::Signed(1 << 1))));
+                    is.append(&mut check_overflow());
                 }
                 Prim1::Not => {
                     assert!(dest != Reg::R15);
-                    instrs.append(&mut check_isbool(dest, "logic_error"));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(
+                    is.append(&mut check_isbool(dest, "logic_error"));
+                    is.push(Instr::Mov(MovArgs::ToReg(
                         Reg::R15,
                         Arg64::Unsigned(BOOL_MASK),
                     )));
-                    instrs.push(Instr::Xor(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    is.push(Instr::Xor(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
                 }
                 Prim1::Print => {
-                    // mov rdi, rax
-                    // call print_snake_val
-                    instrs.push(Instr::Mov(MovArgs::ToReg(Reg::Rdi, Arg64::Reg(dest))));
-                    instrs.push(Instr::Call("print_snake_val".to_string()));
+                    let (mut is_push, mut is_pop) = compile_caller_saved(env_lcl);
+                    is.append(&mut is_push);
+                    is.push(Instr::Mov(MovArgs::ToReg(Reg::Rdi, Arg64::Reg(dest))));
+                    is.push(Instr::Call("print_snake_val".to_string()));
+                    is.append(&mut is_pop);
                 }
                 Prim1::IsBool => {
-                    //     mov r15, bool_tag
-                    //     test rax, r15
-                    //     mov rax, true
-                    //     jnz isbool
-                    //     mov rax, false
-                    // isbool:
                     let isbool_lab = format!("isbool#{}", ann);
-                    instrs.push(Instr::Mov(MovArgs::ToReg(
+                    is.push(Instr::Mov(MovArgs::ToReg(
                         Reg::R15,
                         Arg64::Unsigned(BOOL_TAG),
                     )));
-                    instrs.push(Instr::Test(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
-                    instrs.push(Instr::Jnz(isbool_lab.clone()));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
-                    instrs.push(Instr::Label(isbool_lab));
+                    is.push(Instr::Test(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    is.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
+                    is.push(Instr::Jnz(isbool_lab.clone()));
+                    is.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
+                    is.push(Instr::Label(isbool_lab));
                 }
                 Prim1::IsNum => {
-                    //     mov r15, bool_tag
-                    //     test rax, r15
-                    //     mov rax, true
-                    //     jz isnum
-                    //     mov rax, false
-                    // isnum:
                     let isnum_lab = format!("isnum#{}", ann);
-                    instrs.push(Instr::Mov(MovArgs::ToReg(
+                    is.push(Instr::Mov(MovArgs::ToReg(
                         Reg::R15,
                         Arg64::Unsigned(BOOL_TAG),
                     )));
-                    instrs.push(Instr::Test(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
-                    instrs.push(Instr::Jz(isnum_lab.clone()));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
-                    instrs.push(Instr::Label(isnum_lab));
+                    is.push(Instr::Test(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    is.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
+                    is.push(Instr::Jz(isnum_lab.clone()));
+                    is.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
+                    is.push(Instr::Label(isnum_lab));
                 }
                 Prim1::PrintStack => todo!(),
             }
-            instrs
+            is
         }
         SeqExp::Prim2(prim2, imm1, imm2, ann) => {
             assert!(dest != Reg::R15);
 
             // Compile imm1 with destination register RAX
-            let mut instrs = compile_imm(imm1, env_arg, env_lcl, dest);
+            let mut is = compile_imm(imm1, env_arg, env_lcl, dest);
 
             // Compile imm2 with destination register R15
-            instrs.append(&mut compile_imm(imm2, env_arg, env_lcl, Reg::R15));
+            is.append(&mut compile_imm(imm2, env_arg, env_lcl, Reg::R15));
 
             match prim2 {
                 Prim2::Add => {
-                    instrs.append(&mut check_isnum(dest, "arith_error"));
-                    instrs.append(&mut check_isnum(Reg::R15, "arith_error"));
-                    instrs.push(Instr::Add(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
-                    instrs.append(&mut check_overflow());
+                    is.append(&mut check_isnum(dest, "arith_error"));
+                    is.append(&mut check_isnum(Reg::R15, "arith_error"));
+                    is.push(Instr::Add(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    is.append(&mut check_overflow());
                 }
                 Prim2::Sub => {
-                    instrs.append(&mut check_isnum(dest, "arith_error"));
-                    instrs.append(&mut check_isnum(Reg::R15, "arith_error"));
-                    instrs.push(Instr::Sub(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
-                    instrs.append(&mut check_overflow());
+                    is.append(&mut check_isnum(dest, "arith_error"));
+                    is.append(&mut check_isnum(Reg::R15, "arith_error"));
+                    is.push(Instr::Sub(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    is.append(&mut check_overflow());
                 }
                 Prim2::Mul => {
-                    instrs.append(&mut check_isnum(dest, "arith_error"));
-                    instrs.append(&mut check_isnum(Reg::R15, "arith_error"));
-                    instrs.push(Instr::Sar(BinArgs::ToReg(dest, Arg32::Signed(1))));
-                    instrs.push(Instr::IMul(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
-                    instrs.append(&mut check_overflow());
+                    is.append(&mut check_isnum(dest, "arith_error"));
+                    is.append(&mut check_isnum(Reg::R15, "arith_error"));
+                    is.push(Instr::Sar(BinArgs::ToReg(dest, Arg32::Signed(1))));
+                    is.push(Instr::IMul(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    is.append(&mut check_overflow());
                 }
                 Prim2::And => {
-                    instrs.append(&mut check_isbool(dest, "logic_error"));
-                    instrs.append(&mut check_isbool(Reg::R15, "logic_error"));
-                    instrs.push(Instr::And(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    is.append(&mut check_isbool(dest, "logic_error"));
+                    is.append(&mut check_isbool(Reg::R15, "logic_error"));
+                    is.push(Instr::And(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
                 }
                 Prim2::Or => {
-                    instrs.append(&mut check_isbool(dest, "logic_error"));
-                    instrs.append(&mut check_isbool(Reg::R15, "logic_error"));
-                    instrs.push(Instr::Or(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    is.append(&mut check_isbool(dest, "logic_error"));
+                    is.append(&mut check_isbool(Reg::R15, "logic_error"));
+                    is.push(Instr::Or(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
                 }
                 Prim2::Lt => {
                     let lt_lab = format!("lt#{}", ann);
-                    instrs.append(&mut check_isnum(dest, "cmp_error"));
-                    instrs.append(&mut check_isnum(Reg::R15, "cmp_error"));
-                    instrs.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
-                    instrs.push(Instr::Jl(lt_lab.clone()));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
-                    instrs.push(Instr::Label(lt_lab));
+                    is.append(&mut check_isnum(dest, "cmp_error"));
+                    is.append(&mut check_isnum(Reg::R15, "cmp_error"));
+                    is.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    is.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
+                    is.push(Instr::Jl(lt_lab.clone()));
+                    is.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
+                    is.push(Instr::Label(lt_lab));
                 }
                 Prim2::Gt => {
                     let gt_lab = format!("gt#{}", ann);
-                    instrs.append(&mut check_isnum(dest, "cmp_error"));
-                    instrs.append(&mut check_isnum(Reg::R15, "cmp_error"));
-                    instrs.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
-                    instrs.push(Instr::Jg(gt_lab.clone()));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
-                    instrs.push(Instr::Label(gt_lab));
+                    is.append(&mut check_isnum(dest, "cmp_error"));
+                    is.append(&mut check_isnum(Reg::R15, "cmp_error"));
+                    is.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    is.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
+                    is.push(Instr::Jg(gt_lab.clone()));
+                    is.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
+                    is.push(Instr::Label(gt_lab));
                 }
                 Prim2::Le => {
                     let le_lab = format!("le#{}", ann);
-                    instrs.append(&mut check_isnum(dest, "cmp_error"));
-                    instrs.append(&mut check_isnum(Reg::R15, "cmp_error"));
-                    instrs.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
-                    instrs.push(Instr::Jle(le_lab.clone()));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
-                    instrs.push(Instr::Label(le_lab));
+                    is.append(&mut check_isnum(dest, "cmp_error"));
+                    is.append(&mut check_isnum(Reg::R15, "cmp_error"));
+                    is.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    is.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
+                    is.push(Instr::Jle(le_lab.clone()));
+                    is.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
+                    is.push(Instr::Label(le_lab));
                 }
                 Prim2::Ge => {
                     let ge_lab = format!("ge#{}", ann);
-                    instrs.append(&mut check_isnum(dest, "cmp_error"));
-                    instrs.append(&mut check_isnum(Reg::R15, "cmp_error"));
-                    instrs.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
-                    instrs.push(Instr::Jge(ge_lab.clone()));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
-                    instrs.push(Instr::Label(ge_lab));
+                    is.append(&mut check_isnum(dest, "cmp_error"));
+                    is.append(&mut check_isnum(Reg::R15, "cmp_error"));
+                    is.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    is.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
+                    is.push(Instr::Jge(ge_lab.clone()));
+                    is.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
+                    is.push(Instr::Label(ge_lab));
                 }
                 Prim2::Eq => {
                     let eq_lab = format!("eq#{}", ann);
-                    instrs.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
-                    instrs.push(Instr::Je(eq_lab.clone()));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
-                    instrs.push(Instr::Label(eq_lab));
+                    is.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    is.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
+                    is.push(Instr::Je(eq_lab.clone()));
+                    is.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
+                    is.push(Instr::Label(eq_lab));
                 }
                 Prim2::Neq => {
                     let neq_lab = format!("neq#{}", ann);
-                    instrs.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
-                    instrs.push(Instr::Jne(neq_lab.clone()));
-                    instrs.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
-                    instrs.push(Instr::Label(neq_lab));
+                    is.push(Instr::Cmp(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
+                    is.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_TRU))));
+                    is.push(Instr::Jne(neq_lab.clone()));
+                    is.push(Instr::Mov(MovArgs::ToReg(dest, Arg64::Unsigned(SNAKE_FLS))));
+                    is.push(Instr::Label(neq_lab));
                 }
             };
-            instrs
+            is
         }
         SeqExp::Let {
             var,
@@ -1589,16 +1628,16 @@ fn compile_with_env<'exp>(
             body,
             ann: _,
         } => {
-            let mut instrs = compile_with_env(bound_exp, env_arg, env_lcl, dest, false);
+            let mut is = compile_with_env(bound_exp, env_arg, env_lcl, dest, false);
 
             // Save RAX to stack memory or registers
             match env_lcl.get(var) {
                 Some(vl) => match vl {
                     VarLocation::Reg(r) => {
-                        instrs.push(Instr::Mov(MovArgs::ToReg(*r, Arg64::Reg(dest))));
+                        is.push(Instr::Mov(MovArgs::ToReg(*r, Arg64::Reg(dest))));
                     }
                     VarLocation::Spill(n) => {
-                        instrs.push(Instr::Mov(MovArgs::ToMem(
+                        is.push(Instr::Mov(MovArgs::ToMem(
                             MemRef {
                                 reg: Reg::Rbp,
                                 offset: (n + 1) * (-8),
@@ -1610,8 +1649,8 @@ fn compile_with_env<'exp>(
                 None => panic!("Cannot get var location from env_lcl"),
             }
 
-            instrs.append(&mut compile_with_env(body, env_arg, env_lcl, dest, is_tail));
-            instrs
+            is.append(&mut compile_with_env(body, env_arg, env_lcl, dest, is_tail));
+            is
         }
         SeqExp::If {
             cond,
@@ -1656,7 +1695,7 @@ fn compile_with_env<'exp>(
             is
         }
         SeqExp::Call(name, imms, _) => {
-            let mut is = vec![];
+            let mut is = Vec::<Instr>::new();
 
             // Count callee and caller's #args
             let callee_arg_num = imms.len();
@@ -1669,19 +1708,23 @@ fn compile_with_env<'exp>(
                     is.push(Instr::Mov(MovArgs::ToMem(
                         MemRef {
                             reg: Reg::Rbp,
-                            offset: (i as i32 + 3) * 8,
+                            // TODO: automatically determine the offset based on
+                            // how many callee-saved regs are pushed on the stack
+                            offset: (i as i32 + 5) * 8,
                         },
                         Reg32::Reg(Reg::Rax),
                     )));
                 }
                 // Make the stack pointer point at base pointer
                 is.push(Instr::Mov(MovArgs::ToReg(Reg::Rsp, Arg64::Reg(Reg::Rbp))));
-                // Restore R15 and Rbp
-                is.push(Instr::Pop(Loc::Reg(Reg::R15)));
-                is.push(Instr::Pop(Loc::Reg(Reg::Rbp)));
+                // Restore callee-saved registers
+                let (_, mut is_pop) = compile_callee_saved();
+                is.append(&mut is_pop);
                 // Jump to the function
                 is.push(Instr::Jmp(name.to_string()));
             } else {
+                let (mut is_push, mut is_pop) = compile_caller_saved(env_lcl);
+                is.append(&mut is_push);
                 let offset = -8 * imms.len() as i32;
                 for imm in imms.iter().rev() {
                     is.append(&mut compile_imm(imm, env_arg, env_lcl, dest));
@@ -1689,6 +1732,7 @@ fn compile_with_env<'exp>(
                 }
                 is.push(Instr::Call(name.to_string()));
                 is.push(Instr::Sub(BinArgs::ToReg(Reg::Rsp, Arg32::Signed(offset))));
+                is.append(&mut is_pop);
             }
             is
         }
@@ -1711,20 +1755,21 @@ fn compile_to_instrs<'exp>(
         space = (space_lcl + 1) / 2 * 2;
     }
 
-    let mut instrs = vec![];
-    instrs.push(Instr::Push(Arg32::Reg(Reg::Rbp)));
-    instrs.push(Instr::Push(Arg32::Reg(Reg::R15)));
-    instrs.push(Instr::Mov(MovArgs::ToReg(Reg::Rbp, Arg64::Reg(Reg::Rsp))));
-    instrs.push(Instr::Sub(BinArgs::ToReg(
-        Reg::Rsp,
-        Arg32::Signed(space * 8),
-    )));
-    instrs.append(&mut compile_with_env(e, env_arg, env_lcl, Reg::Rax, true));
-    instrs.push(Instr::Mov(MovArgs::ToReg(Reg::Rsp, Arg64::Reg(Reg::Rbp))));
-    instrs.push(Instr::Pop(Loc::Reg(Reg::R15)));
-    instrs.push(Instr::Pop(Loc::Reg(Reg::Rbp)));
-    instrs.push(Instr::Ret);
-    instrs
+    let mut is = Vec::<Instr>::new();
+    let (mut is_push, mut is_pop) = compile_callee_saved();
+    is.append(&mut is_push);
+    is.push(Instr::Mov(MovArgs::ToReg(Reg::Rbp, Arg64::Reg(Reg::Rsp))));
+    if space != 0 {
+        is.push(Instr::Sub(BinArgs::ToReg(
+            Reg::Rsp,
+            Arg32::Signed(space * 8),
+        )));
+    }
+    is.append(&mut compile_with_env(e, env_arg, env_lcl, Reg::Rax, true));
+    is.push(Instr::Mov(MovArgs::ToReg(Reg::Rsp, Arg64::Reg(Reg::Rbp))));
+    is.append(&mut is_pop);
+    is.push(Instr::Ret);
+    is
 }
 
 pub fn compile_to_string(p: &SurfProg<Span1>) -> Result<String, CompileErr<Span1>> {
@@ -1732,14 +1777,14 @@ pub fn compile_to_string(p: &SurfProg<Span1>) -> Result<String, CompileErr<Span1
     let seq_p: Prog<SeqExp<(HashSet<String>, u32)>, u32> = add_tag_sprog(&liveness_p(
         &uniquify_names(&tag_sprog(&seq_prog(&tag_prog(p)))),
     ));
-    let mut instrs = Vec::<Instr>::new();
+    let mut is = Vec::<Instr>::new();
 
     for fun in seq_p.funs {
         let mut fun_instrs = compile_fun(&fun.name, &fun.parameters, &fun.body);
-        instrs.append(&mut fun_instrs);
+        is.append(&mut fun_instrs);
     }
 
-    instrs.append(&mut compile_main(&seq_p.main));
+    is.append(&mut compile_main(&seq_p.main));
     Ok(format!(
         "\
         section .text
@@ -1767,6 +1812,6 @@ cond_error:
         mov rdi, 4
         call snake_error
 ",
-        instrs_to_string(&instrs)
+        instrs_to_string(&is)
     ))
 }
