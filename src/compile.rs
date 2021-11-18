@@ -1272,7 +1272,8 @@ pub fn allocate_registers(
         loop {
             // println!("start coloring");
             if !stack.is_empty() {
-                let node = stack.pop().unwrap();
+                // Get available registers
+                let node = stack.last().unwrap();
                 let empty_set = HashSet::new();
                 let nbrs = conflicts.neighbors(&node).unwrap_or(&empty_set); // 1 4 5
                 let regs_conf: HashSet<Reg> = nbrs
@@ -1287,8 +1288,9 @@ pub fn allocate_registers(
                     .collect();
                 let regs_avail: HashSet<Reg> =
                     regs_all.difference(&regs_conf).map(|r| r.clone()).collect();
+
+                // If there is no free colors, then choose an uncolored node, spill it
                 if regs_avail.len() == 0 {
-                    // If the is no free colors, then choose an uncolored node, spill it
                     let vtx_spill = stack
                         .iter()
                         .max_by(|v1, v2| {
@@ -1303,9 +1305,12 @@ pub fn allocate_registers(
                     env.insert(vtx_spill.clone(), VarLocation::Spill(spill_cnt));
                     spill_cnt += 1;
                     break;
-                } else {
+                }
+                // Successfully color the node
+                else {
                     let reg_min = regs_avail.into_iter().min().unwrap();
-                    env_try.insert(node, VarLocation::Reg(reg_min));
+                    env_try.insert(node.to_owned(), VarLocation::Reg(reg_min));
+                    stack.pop();
                 }
             } else {
                 // Successfully color the graph
