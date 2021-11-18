@@ -7,7 +7,7 @@ use crate::syntax::{
     SeqExp, SeqProg, SurfProg,
 };
 use itertools::Itertools;
-use rand::seq::SliceRandom;
+use rand::prelude::IteratorRandom;
 use std::collections::{HashMap, HashSet};
 
 static BOOL_TAG32: u32 = 0x01;
@@ -1204,91 +1204,116 @@ pub fn conflicts<Ann>(e: &SeqExp<(HashSet<String>, Ann)>) -> Graph<String> {
     g
 }
 
+// TODO: empty graph?
 pub fn allocate_registers(
     mut conflicts: Graph<String>,
     registers: &[Reg],
 ) -> HashMap<String, VarLocation> {
-    // let mut env = HashMap::<String, VarLocation>::new();
-    // for (i, v) in conflicts.vertices().into_iter().enumerate() {
-    //     env.insert(v, VarLocation::Spill(i as i32));
-    // }
-    // env
-
     // Utility
     let mut rng = rand::thread_rng();
-    let regs_set: HashSet<&Reg> = HashSet::from_iter(registers);
+    let regs_all: HashSet<Reg> = HashSet::from_iter(registers.to_owned());
+    let k = registers.len();
 
     // Initialize env
     let mut spill_cnt = 0;
     let mut env = HashMap::<String, VarLocation>::new();
 
-    // Find vertices that has edges more than the number of available registers
-    let reg_num = registers.len();
     loop {
-        match conflicts
-            .vertices()
-            .into_iter()
-            .find(|v| conflicts.neighbors(&v).unwrap().len() >= reg_num)
-        {
-            Some(vtx) => {
-                conflicts.remove_vertex(&vtx);
-                env.insert(vtx, VarLocation::Spill(spill_cnt));
-                spill_cnt += 1;
-            }
-            None => break,
-        };
-    }
-
-    // While G cannot be R-colored
-    //     While graph G has a node N with degree less than R
-    //         Remove N and its associated edges from G and push N on a stack S
-    //     End While
-    //
-    //     While stack S contains a node N
-    //         Add N to graph G and assign it a color from the R colors
-    //         If failed, Simplify the graph G by choosing an object to spill and remove its node N from G
-    //         (spill nodes are chosen based on object’s number of definitions and references)
-    //         break the while
-    //     End while
-    // End While
-
-    // Try to color the graph
-    loop {
-        let mut curr_map: HashMap<String, Reg> = HashMap::new();
-
-        // (Remove vertices and) push onto the stack
-        let mut stack = conflicts.vertices();
-        stack.shuffle(&mut rng);
-
-        for v in stack {
-            let used_regs = match conflicts.neighbors(&v) {
-                Some(nbrs) => nbrs
-                    .into_iter()
-                    .map(|nbr| curr_map.get(nbr).unwrap_or(&Reg::Rax))
-                    .collect(),
-                None => HashSet::new(),
-            };
-            match regs_set
-                .difference(&used_regs)
+        let mut stack = Vec::<String>::new();
+        let mut g = conflicts.clone();
+        loop {
+            // If there're nodes with degree < k
+            while g
+                .vertices()
                 .into_iter()
-                .map(|reg| *reg.clone())
-                .collect::<Vec<Reg>>()
-                .choose(&mut rng)
+                .map(|v| g.neighbors(&v).unwrap_or(&HashSet::new()).len())
+                .any(|l| l < k)
             {
-                Some(reg) => {
-                    curr_map.insert(v, *reg);
-                }
-                None => break,
+                // Choose such node
+                let node = g
+                    .vertices()
+                    .into_iter()
+                    .filter(|v| g.neighbors(&v).unwrap_or(&HashSet::new()).len() < k)
+                    .choose(&mut rng)
+                    .unwrap();
+                // Delete the node from graph
+                g.remove_vertex(&node);
+                // Push it onto the stack
+                stack.push(node);
+            }
+
+            // If the graph is non-empty (and all nodes have degree >= k)
+            if g.num_vertices() > 0 {
+                let all_deg_ge_k = g
+                    .vertices()
+                    .into_iter()
+                    .all(|v| g.neighbors(&v).unwrap_or(&HashSet::new()).len() >= k);
+                assert!(all_deg_ge_k);
+
+                // choose a node, push it into the stack, and delete it
+                let node = g
+                    .vertices()
+                    .into_iter()
+                    .max_by(|v1, v2| {
+                        g.neighbors(&v1)
+                            .unwrap_or(&HashSet::new())
+                            .len()
+                            .cmp(&g.neighbors(&v2).unwrap_or(&HashSet::new()).len())
+                    })
+                    .unwrap();
+                g.remove_vertex(&node);
+                stack.push(node);
+            } else {
+                break;
             }
         }
 
-        // Merge
-        for (k, v) in curr_map {
-            env.insert(k, VarLocation::Reg(v));
+        let mut env_try = HashMap::<String, VarLocation>::new();
+        loop {
+            // println!("start coloring");
+            if !stack.is_empty() {
+                let node = stack.pop().unwrap();
+                let empty_set = HashSet::new();
+                let nbrs = conflicts.neighbors(&node).unwrap_or(&empty_set); // 1 4 5
+                let regs_conf: HashSet<Reg> = nbrs
+                    .into_iter()
+                    .filter_map(|nbr| match env_try.get(nbr) {
+                        Some(vl) => match vl {
+                            VarLocation::Reg(r) => Some(r.clone()),
+                            VarLocation::Spill(_) => panic!(),
+                        },
+                        None => None,
+                    })
+                    .collect();
+                let regs_avail: HashSet<Reg> =
+                    regs_all.difference(&regs_conf).map(|r| r.clone()).collect();
+                if regs_avail.len() == 0 {
+                    // If the is no free colors, then choose an uncolored node, spill it
+                    let vtx_spill = stack
+                        .iter()
+                        .max_by(|v1, v2| {
+                            conflicts
+                                .neighbors(&v1)
+                                .unwrap_or(&HashSet::new())
+                                .len()
+                                .cmp(&conflicts.neighbors(&v2).unwrap_or(&HashSet::new()).len())
+                        })
+                        .unwrap();
+                    conflicts.remove_vertex(vtx_spill);
+                    env.insert(vtx_spill.clone(), VarLocation::Spill(spill_cnt));
+                    spill_cnt += 1;
+                    break;
+                } else {
+                    let reg_min = regs_avail.into_iter().min().unwrap();
+                    env_try.insert(node, VarLocation::Reg(reg_min));
+                }
+            } else {
+                // Successfully color the graph
+                env.extend(env_try.to_owned());
+                return env;
+            }
         }
-        break;
     }
-    env
 }
 
 fn compile_fun(name: &str, params: &[String], body: &SeqExp<(HashSet<String>, u32)>) -> Vec<Instr> {
