@@ -1439,7 +1439,10 @@ fn compile_imm<'exp>(
     }
 }
 
-fn compile_caller_saved(env_lcl: &HashMap<String, VarLocation>) -> (Vec<Instr>, Vec<Instr>) {
+fn compile_caller_saved(
+    env_lcl: &HashMap<String, VarLocation>,
+    used_regs: &[Reg],
+) -> (Vec<Instr>, Vec<Instr>) {
     // TODO: not all caller saved register are assigned before the function call
     // Consider using HashSet to perform difference
     let mut is_push = Vec::<Instr>::new();
@@ -1451,7 +1454,7 @@ fn compile_caller_saved(env_lcl: &HashMap<String, VarLocation>) -> (Vec<Instr>, 
             VarLocation::Reg(r) => Some(r.clone()),
             VarLocation::Spill(_) => None,
         })
-        .filter(|r| !CALLEE_SAVED_REGISTERS.contains(r))
+        .filter(|r| !CALLEE_SAVED_REGISTERS.contains(r) && used_regs.contains(r))
         .collect();
     let regs_odd = caller_saved_regs.len() % 2 == 1;
 
@@ -1492,6 +1495,7 @@ fn compile_with_env<'exp>(
     e: &'exp SeqExp<u32>,
     env_arg: &Vec<(&'exp str, i32)>,
     env_lcl: &HashMap<String, VarLocation>,
+    used_regs: &mut Vec<Reg>,
     dest: Reg,
     is_tail: bool,
 ) -> Vec<Instr> {
@@ -1520,7 +1524,7 @@ fn compile_with_env<'exp>(
                     is.push(Instr::Xor(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
                 }
                 Prim1::Print => {
-                    let (mut is_push, mut is_pop) = compile_caller_saved(env_lcl);
+                    let (mut is_push, mut is_pop) = compile_caller_saved(env_lcl, used_regs);
                     is.append(&mut is_push);
                     is.push(Instr::Mov(MovArgs::ToReg(Reg::Rdi, Arg64::Reg(dest))));
                     is.push(Instr::Call("print_snake_val".to_string()));
@@ -1658,13 +1662,14 @@ fn compile_with_env<'exp>(
             body,
             ann: _,
         } => {
-            let mut is = compile_with_env(bound_exp, env_arg, env_lcl, dest, false);
+            let mut is = compile_with_env(bound_exp, env_arg, env_lcl, used_regs, dest, false);
 
             // Save RAX to stack memory or registers
             match env_lcl.get(var) {
                 Some(vl) => match vl {
                     VarLocation::Reg(r) => {
                         is.push(Instr::Mov(MovArgs::ToReg(*r, Arg64::Reg(dest))));
+                        used_regs.push(*r);
                     }
                     VarLocation::Spill(n) => {
                         is.push(Instr::Mov(MovArgs::ToMem(
@@ -1679,7 +1684,9 @@ fn compile_with_env<'exp>(
                 None => panic!("Cannot get var location from env_lcl"),
             }
 
-            is.append(&mut compile_with_env(body, env_arg, env_lcl, dest, is_tail));
+            is.append(&mut compile_with_env(
+                body, env_arg, env_lcl, used_regs, dest, is_tail,
+            ));
             is
         }
         SeqExp::If {
@@ -1708,7 +1715,9 @@ fn compile_with_env<'exp>(
             is.push(Instr::Jz(else_lab.clone()));
 
             // Compile then expression
-            is.extend(compile_with_env(thn, env_arg, env_lcl, dest, is_tail));
+            is.extend(compile_with_env(
+                thn, env_arg, env_lcl, used_regs, dest, is_tail,
+            ));
 
             // Jump to done
             is.push(Instr::Jmp(done_lab.clone()));
@@ -1717,7 +1726,9 @@ fn compile_with_env<'exp>(
             is.push(Instr::Label(else_lab));
 
             // Compile else expression
-            is.extend(compile_with_env(els, env_arg, env_lcl, dest, is_tail));
+            is.extend(compile_with_env(
+                els, env_arg, env_lcl, used_regs, dest, is_tail,
+            ));
 
             // Done label
             is.push(Instr::Label(done_lab));
@@ -1753,7 +1764,7 @@ fn compile_with_env<'exp>(
                 // Jump to the function
                 is.push(Instr::Jmp(name.to_string()));
             } else {
-                let (mut is_push, mut is_pop) = compile_caller_saved(env_lcl);
+                let (mut is_push, mut is_pop) = compile_caller_saved(env_lcl, used_regs);
                 is.append(&mut is_push);
                 let offset = -8 * imms.len() as i32;
                 for imm in imms.iter().rev() {
@@ -1795,7 +1806,14 @@ fn compile_to_instrs<'exp>(
             Arg32::Signed(space * 8),
         )));
     }
-    is.append(&mut compile_with_env(e, env_arg, env_lcl, Reg::Rax, true));
+    is.append(&mut compile_with_env(
+        e,
+        env_arg,
+        env_lcl,
+        &mut Vec::<Reg>::new(),
+        Reg::Rax,
+        true,
+    ));
     is.push(Instr::Mov(MovArgs::ToReg(Reg::Rsp, Arg64::Reg(Reg::Rbp))));
     is.append(&mut is_pop);
     is.push(Instr::Ret);
