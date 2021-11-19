@@ -1441,14 +1441,14 @@ fn compile_imm<'exp>(
 
 fn compile_caller_saved(
     env_lcl: &HashMap<String, VarLocation>,
-    used_regs: &[Reg],
+    used_regs: &HashSet<Reg>,
 ) -> (Vec<Instr>, Vec<Instr>) {
     // TODO: not all caller saved register are assigned before the function call
     // Consider using HashSet to perform difference
     let mut is_push = Vec::<Instr>::new();
     let mut is_pop = Vec::<Instr>::new();
 
-    let mut caller_saved_regs: Vec<Reg> = env_lcl
+    let caller_saved_regs: HashSet<Reg> = env_lcl
         .into_iter()
         .filter_map(|(_, vl)| match vl {
             VarLocation::Reg(r) => Some(r.clone()),
@@ -1456,9 +1456,10 @@ fn compile_caller_saved(
         })
         .filter(|r| !CALLEE_SAVED_REGISTERS.contains(r) && used_regs.contains(r))
         .collect();
-    let regs_odd = caller_saved_regs.len() % 2 == 1;
+    let mut caller_saved_regs_vec: Vec<Reg> = Vec::from_iter(caller_saved_regs);
+    let regs_odd = caller_saved_regs_vec.len() % 2 == 1;
 
-    for r in caller_saved_regs.clone() {
+    for r in caller_saved_regs_vec.clone() {
         is_push.push(Instr::Push(Arg32::Reg(r)));
     }
     if regs_odd {
@@ -1468,8 +1469,8 @@ fn compile_caller_saved(
     if regs_odd {
         is_pop.push(Instr::Add(BinArgs::ToReg(Reg::Rsp, Arg32::Signed(8))));
     }
-    caller_saved_regs.reverse();
-    for r in caller_saved_regs {
+    caller_saved_regs_vec.reverse();
+    for r in caller_saved_regs_vec {
         is_pop.push(Instr::Pop(Loc::Reg(r)));
     }
 
@@ -1495,7 +1496,7 @@ fn compile_with_env<'exp>(
     e: &'exp SeqExp<u32>,
     env_arg: &Vec<(&'exp str, i32)>,
     env_lcl: &HashMap<String, VarLocation>,
-    used_regs: &mut Vec<Reg>,
+    used_regs: &mut HashSet<Reg>,
     dest: Reg,
     is_tail: bool,
 ) -> Vec<Instr> {
@@ -1669,7 +1670,7 @@ fn compile_with_env<'exp>(
                 Some(vl) => match vl {
                     VarLocation::Reg(r) => {
                         is.push(Instr::Mov(MovArgs::ToReg(*r, Arg64::Reg(dest))));
-                        used_regs.push(*r);
+                        used_regs.insert(*r);
                     }
                     VarLocation::Spill(n) => {
                         is.push(Instr::Mov(MovArgs::ToMem(
@@ -1810,7 +1811,7 @@ fn compile_to_instrs<'exp>(
         e,
         env_arg,
         env_lcl,
-        &mut Vec::<Reg>::new(),
+        &mut HashSet::<Reg>::new(),
         Reg::Rax,
         true,
     ));
