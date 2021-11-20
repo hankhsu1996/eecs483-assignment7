@@ -644,16 +644,44 @@ fn sequentialize(e: &Exp<u32>) -> SeqExp<()> {
                 ann: (),
             }
         }
-        Exp::Call(name, exps, ann) => {
-            let mut seq_args = vec![];
-            for (i, _) in exps.iter().enumerate() {
-                let arg_name = format!("#call_{}_{}", ann, i);
-                seq_args.push(ImmExp::Var(arg_name));
-            }
-            let seq_call = SeqExp::Call(name.to_string(), seq_args, ());
-            // TODO: Remove redundant let expression if e is Exp::Imm
+        Exp::Call(name, args, ann) => {
+            let args_nonimm: Vec<(&Exp<u32>, usize)> = args
+                .iter()
+                .enumerate()
+                .map(|(i, e)| (e, i))
+                .filter(|(e, _)| match e {
+                    Exp::Num(_, _) => false,
+                    Exp::Bool(_, _) => false,
+                    Exp::Var(_, _) => false,
+                    _ => true,
+                })
+                .collect();
+            let args_new: Vec<ImmExp> = args
+                .iter()
+                .enumerate()
+                .map(|(i, e)| match e {
+                    Exp::Num(n, _) => ImmExp::Num(*n),
+                    Exp::Bool(b, _) => ImmExp::Bool(*b),
+                    Exp::Var(v, _) => ImmExp::Var(v.to_owned()),
+                    Exp::Prim1(_, _, _) => ImmExp::Var(format!("#call_{}_{}", ann, i)),
+                    Exp::Prim2(_, _, _, _) => ImmExp::Var(format!("#call_{}_{}", ann, i)),
+                    Exp::Let {
+                        bindings: _,
+                        body: _,
+                        ann: _,
+                    } => ImmExp::Var(format!("#call_{}_{}", ann, i)),
+                    Exp::If {
+                        cond: _,
+                        thn: _,
+                        els: _,
+                        ann: _,
+                    } => ImmExp::Var(format!("#call_{}_{}", ann, i)),
+                    Exp::Call(_, _, ann) => ImmExp::Var(format!("#call_{}_{}", ann, i)),
+                })
+                .collect();
+            let seq_call = SeqExp::Call(name.to_string(), args_new, ());
             let mut curr = seq_call;
-            for (i, e) in exps.iter().enumerate().rev() {
+            for (e, i) in args_nonimm.iter().rev() {
                 let arg_name = format!("#call_{}_{}", ann, i);
                 curr = SeqExp::Let {
                     var: arg_name,
@@ -1744,19 +1772,49 @@ fn compile_with_env<'exp>(
             let caller_arg_num = env_arg.len();
 
             if is_tail && callee_arg_num <= caller_arg_num {
-                // Overwrite our parameters with the callee's parameters
-                for (i, imm) in imms.iter().enumerate() {
-                    is.append(&mut compile_imm(imm, env_arg, env_lcl, dest));
-                    is.push(Instr::Mov(MovArgs::ToMem(
-                        MemRef {
+                // TODO: The cyclic dependency elimination is not optimal.
+                // http://maxsnew.com/teaching/eecs-483-fa21/lec_tail-calls_rust_notes.html#%28part._.Reusing_arguments%29
+
+                // Check if any of the argument values come from addresses that we’re about to overwrite
+                // imms any, not in lcl env
+                let cyclic_dep = imms.iter().any(|imm| match imm {
+                    ImmExp::Num(_) => false,
+                    ImmExp::Bool(_) => false,
+                    ImmExp::Var(v) => !env_lcl.contains_key(v),
+                });
+
+                if cyclic_dep {
+                    // Push all the new argument values onto the stack
+                    for imm in imms {
+                        is.append(&mut compile_imm(imm, env_arg, env_lcl, dest));
+                        is.push(Instr::Push(Arg32::Reg(Reg::Rax)));
+                    }
+
+                    // Pop them (in the opposite order) into their correct locations
+                    for (i, _) in imms.iter().enumerate().rev() {
+                        is.push(Instr::Pop(Loc::Mem(MemRef {
                             reg: Reg::Rbp,
                             // TODO: automatically determine the offset based on
                             // how many callee-saved regs are pushed on the stack
                             offset: (i as i32 + 5) * 8,
-                        },
-                        Reg32::Reg(Reg::Rax),
-                    )));
+                        })))
+                    }
+                } else {
+                    // Overwrite our parameters with the callee's parameters
+                    for (i, imm) in imms.iter().enumerate() {
+                        is.append(&mut compile_imm(imm, env_arg, env_lcl, dest));
+                        is.push(Instr::Mov(MovArgs::ToMem(
+                            MemRef {
+                                reg: Reg::Rbp,
+                                // TODO: automatically determine the offset based on
+                                // how many callee-saved regs are pushed on the stack
+                                offset: (i as i32 + 5) * 8,
+                            },
+                            Reg32::Reg(Reg::Rax),
+                        )));
+                    }
                 }
+
                 // Make the stack pointer point at base pointer
                 is.push(Instr::Mov(MovArgs::ToReg(Reg::Rsp, Arg64::Reg(Reg::Rbp))));
                 // Restore callee-saved registers

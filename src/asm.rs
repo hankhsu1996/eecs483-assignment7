@@ -159,9 +159,9 @@ pub fn imm32_to_string(i: i32) -> String {
 
 pub fn mem_ref_to_string(m: MemRef) -> String {
     if m.offset == 0 {
-        String::from(format!("[{}]", reg_to_string(m.reg)))
+        String::from(format!("QWORD [{}]", reg_to_string(m.reg)))
     } else {
-        String::from(format!("[{}{:+}]", reg_to_string(m.reg), m.offset))
+        String::from(format!("QWORD [{}{:+}]", reg_to_string(m.reg), m.offset))
     }
 }
 
