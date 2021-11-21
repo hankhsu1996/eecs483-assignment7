@@ -1524,7 +1524,7 @@ fn compile_with_env<'exp>(
     e: &'exp SeqExp<u32>,
     env_arg: &Vec<(&'exp str, i32)>,
     env_lcl: &HashMap<String, VarLocation>,
-    used_regs: &mut HashSet<Reg>,
+    mut used_regs: HashSet<Reg>,
     dest: Reg,
     is_tail: bool,
 ) -> Vec<Instr> {
@@ -1553,7 +1553,7 @@ fn compile_with_env<'exp>(
                     is.push(Instr::Xor(BinArgs::ToReg(dest, Arg32::Reg(Reg::R15))));
                 }
                 Prim1::Print => {
-                    let (mut is_push, mut is_pop) = compile_caller_saved(env_lcl, used_regs);
+                    let (mut is_push, mut is_pop) = compile_caller_saved(env_lcl, &used_regs);
                     is.append(&mut is_push);
                     is.push(Instr::Mov(MovArgs::ToReg(Reg::Rdi, Arg64::Reg(dest))));
                     is.push(Instr::Call("print_snake_val".to_string()));
@@ -1691,7 +1691,8 @@ fn compile_with_env<'exp>(
             body,
             ann: _,
         } => {
-            let mut is = compile_with_env(bound_exp, env_arg, env_lcl, used_regs, dest, false);
+            let mut is =
+                compile_with_env(bound_exp, env_arg, env_lcl, used_regs.clone(), dest, false);
 
             // Save RAX to stack memory or registers
             match env_lcl.get(var) {
@@ -1714,7 +1715,12 @@ fn compile_with_env<'exp>(
             }
 
             is.append(&mut compile_with_env(
-                body, env_arg, env_lcl, used_regs, dest, is_tail,
+                body,
+                env_arg,
+                env_lcl,
+                used_regs.clone(),
+                dest,
+                is_tail,
             ));
             is
         }
@@ -1745,7 +1751,12 @@ fn compile_with_env<'exp>(
 
             // Compile then expression
             is.extend(compile_with_env(
-                thn, env_arg, env_lcl, used_regs, dest, is_tail,
+                thn,
+                env_arg,
+                env_lcl,
+                used_regs.clone(),
+                dest,
+                is_tail,
             ));
 
             // Jump to done
@@ -1756,7 +1767,12 @@ fn compile_with_env<'exp>(
 
             // Compile else expression
             is.extend(compile_with_env(
-                els, env_arg, env_lcl, used_regs, dest, is_tail,
+                els,
+                env_arg,
+                env_lcl,
+                used_regs.clone(),
+                dest,
+                is_tail,
             ));
 
             // Done label
@@ -1823,7 +1839,7 @@ fn compile_with_env<'exp>(
                 // Jump to the function
                 is.push(Instr::Jmp(name.to_string()));
             } else {
-                let (mut is_push, mut is_pop) = compile_caller_saved(env_lcl, used_regs);
+                let (mut is_push, mut is_pop) = compile_caller_saved(env_lcl, &used_regs);
                 is.append(&mut is_push);
                 let offset = -8 * imms.len() as i32;
                 for imm in imms.iter().rev() {
@@ -1869,7 +1885,7 @@ fn compile_to_instrs<'exp>(
         e,
         env_arg,
         env_lcl,
-        &mut HashSet::<Reg>::new(),
+        HashSet::<Reg>::new(),
         Reg::Rax,
         true,
     ));
