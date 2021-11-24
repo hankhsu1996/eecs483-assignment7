@@ -1,0 +1,21 @@
+let var1 = 12351,
+    var2 = add1 (var1),
+    var3 = 10284
+in
+    let var4 = add1 (var1),
+        var5 = var4 * print(var2),
+        var1 = 18471705,
+        wentsai = 19980214,
+        hankhsu = 19960503,
+        var6 = (hankhsu > wentsai),
+        acoolboolean = (true || false)
+    in
+        let var7 = var1 - var4,
+            var8 = sub1(var7),
+            var9 = 2 * wentsai,
+            var10 = false,
+            mybirthdayis = print(wentsai)
+        in
+            if var5 >= 98436196 && acoolboolean :
+                let acoolboolean = false in print(sub1(add1(wentsai)))
+            else : let acoolboolean = false in print(hankhsu)

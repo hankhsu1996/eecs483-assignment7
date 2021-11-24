@@ -712,6 +712,18 @@ fn seq_prog(p: &SurfProg<u32>) -> SeqProg<()> {
     }
 }
 
+fn get_child_ann(s_body: SeqExp<HashSet<String>>) -> HashSet<String> {
+    match s_body {
+        SeqExp::Let {
+            var: _,
+            bound_exp,
+            body: _,
+            ann: _,
+        } => get_child_ann(*bound_exp),
+        _ => s_body.ann(),
+    }
+}
+
 pub fn liveness<Ann>(
     e: &SeqExp<Ann>,
     params: &HashSet<String>,
@@ -779,22 +791,25 @@ pub fn liveness<Ann>(
             body,
             ann: _,
         } => {
-            // Get new body
+            // Get body's set
             let s_body = liveness(body, params, live_out);
-            let mut ann_body = s_body.ann();
+            let ann_body = get_child_ann(s_body.clone());
+
+            // Add var to form the Let's set
+            let mut ann_let = ann_body.clone();
+            ann_let.insert(var.clone());
 
             // Get new binding
-            ann_body.remove(var);
-            let s_bind = liveness(bound_exp, params, ann_body.clone());
-            let ann_bind = s_bind.ann();
+            let mut ann_bind_in = ann_let.clone();
+            ann_bind_in.remove(var);
+            let s_bind = liveness(bound_exp, params, ann_bind_in);
 
-            // Build the new SeqExp::Let
-            let mut ann_let = ann_bind;
-            ann_let = ann_let
-                .difference(params)
-                .into_iter()
-                .map(|ann| ann.clone())
-                .collect();
+            // let mut ann_let = ann_bind;
+            // ann_let = ann_let
+            //     .difference(params)
+            //     .into_iter()
+            //     .map(|ann| ann.clone())
+            //     .collect();
             SeqExp::Let {
                 var: var.clone(),
                 bound_exp: Box::new(s_bind),
@@ -810,8 +825,8 @@ pub fn liveness<Ann>(
         } => {
             let s_thn = liveness(thn, params, live_out.clone());
             let s_els = liveness(els, params, live_out);
-            let ann_thn = s_thn.ann();
-            let ann_els = s_els.ann();
+            let ann_thn = get_child_ann(s_thn.clone());
+            let ann_els = get_child_ann(s_els.clone());
 
             // Build the new SeqExp::If
             let mut ann_if: HashSet<String> = ann_thn
@@ -860,265 +875,6 @@ pub fn liveness<Ann>(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use std::{collections::HashSet, iter::FromIterator};
-
-    use crate::{
-        compile::liveness,
-        syntax::{ImmExp, Prim2, SeqExp},
-    };
-
-    #[test]
-    fn liveness_test1() {
-        let sexp_orig = SeqExp::Let {
-            var: "x".to_string(),
-            bound_exp: Box::new(SeqExp::Imm(ImmExp::Num(3), ())),
-            body: Box::new(SeqExp::Call(
-                "f".to_string(),
-                vec![
-                    ImmExp::Var("x".to_string()),
-                    ImmExp::Var("y".to_string()),
-                    ImmExp::Var("a".to_string()),
-                ],
-                (),
-            )),
-            ann: (),
-        };
-        let sexp_hash = liveness(
-            &sexp_orig,
-            &HashSet::from_iter(vec!["a".to_string()]),
-            HashSet::new(),
-        );
-        let sexp_expt = SeqExp::Let {
-            var: "x".to_string(),
-            bound_exp: Box::new(SeqExp::Imm(
-                ImmExp::Num(3),
-                HashSet::from_iter(vec!["y".to_string()]),
-            )),
-            body: Box::new(SeqExp::Call(
-                "f".to_string(),
-                vec![
-                    ImmExp::Var("x".to_string()),
-                    ImmExp::Var("y".to_string()),
-                    ImmExp::Var("a".to_string()),
-                ],
-                HashSet::from_iter(vec!["x".to_string(), "y".to_string()]),
-            )),
-            ann: HashSet::from_iter(vec!["y".to_string()]),
-        };
-        assert_eq!(sexp_hash, sexp_expt);
-    }
-
-    #[test]
-    fn liveness_test2() {
-        let sexp_orig = SeqExp::Let {
-            var: "y".to_string(),
-            bound_exp: Box::new(SeqExp::Imm(ImmExp::Num(1), ())),
-            body: Box::new(SeqExp::Let {
-                var: "x".to_string(),
-                bound_exp: Box::new(SeqExp::Imm(ImmExp::Num(2), ())),
-                body: Box::new(SeqExp::Call(
-                    "g".to_string(),
-                    vec![ImmExp::Var("x".to_string()), ImmExp::Var("y".to_string())],
-                    (),
-                )),
-                ann: (),
-            }),
-            ann: (),
-        };
-        let sexp_hash = liveness(&sexp_orig, &HashSet::new(), HashSet::new());
-        let sexp_expt = SeqExp::Let {
-            var: "y".to_string(),
-            bound_exp: Box::new(SeqExp::Imm(ImmExp::Num(1), HashSet::from_iter(vec![]))),
-            body: Box::new(SeqExp::Let {
-                var: "x".to_string(),
-                bound_exp: Box::new(SeqExp::Imm(
-                    ImmExp::Num(2),
-                    HashSet::from_iter(vec!["y".to_string()]),
-                )),
-                body: Box::new(SeqExp::Call(
-                    "g".to_string(),
-                    vec![ImmExp::Var("x".to_string()), ImmExp::Var("y".to_string())],
-                    HashSet::from_iter(vec!["x".to_string(), "y".to_string()]),
-                )),
-                ann: HashSet::from_iter(vec!["y".to_string()]),
-            }),
-            ann: HashSet::from_iter(vec![]),
-        };
-        assert_eq!(sexp_hash, sexp_expt);
-    }
-
-    #[test]
-    fn liveness_test3() {
-        let sexp_orig = SeqExp::Let {
-            var: "x".to_string(),
-            bound_exp: Box::new(SeqExp::Prim2(
-                Prim2::Add,
-                ImmExp::Var("a".to_string()),
-                ImmExp::Var("b".to_string()),
-                (),
-            )),
-            body: Box::new(SeqExp::Let {
-                var: "y".to_string(),
-                bound_exp: Box::new(SeqExp::Call(
-                    "g".to_string(),
-                    vec![ImmExp::Var("x".to_string())],
-                    (),
-                )),
-                body: Box::new(SeqExp::Let {
-                    var: "z".to_string(),
-                    bound_exp: Box::new(SeqExp::Prim2(
-                        Prim2::Mul,
-                        ImmExp::Var("x".to_string()),
-                        ImmExp::Var("y".to_string()),
-                        (),
-                    )),
-                    body: Box::new(SeqExp::Call(
-                        "h".to_string(),
-                        vec![ImmExp::Var("x".to_string()), ImmExp::Var("z".to_string())],
-                        (),
-                    )),
-                    ann: (),
-                }),
-                ann: (),
-            }),
-            ann: (),
-        };
-        let sexp_hash = liveness(
-            &sexp_orig,
-            &HashSet::from_iter(vec!["a".to_string(), "b".to_string()]),
-            HashSet::new(),
-        );
-        let sexp_expt = SeqExp::Let {
-            var: "x".to_string(),
-            bound_exp: Box::new(SeqExp::Prim2(
-                Prim2::Add,
-                ImmExp::Var("a".to_string()),
-                ImmExp::Var("b".to_string()),
-                HashSet::new(),
-            )),
-            body: Box::new(SeqExp::Let {
-                var: "y".to_string(),
-                bound_exp: Box::new(SeqExp::Call(
-                    "g".to_string(),
-                    vec![ImmExp::Var("x".to_string())],
-                    HashSet::from_iter(vec!["x".to_string()]),
-                )),
-                body: Box::new(SeqExp::Let {
-                    var: "z".to_string(),
-                    bound_exp: Box::new(SeqExp::Prim2(
-                        Prim2::Mul,
-                        ImmExp::Var("x".to_string()),
-                        ImmExp::Var("y".to_string()),
-                        HashSet::from_iter(vec!["x".to_string(), "y".to_string()]),
-                    )),
-                    body: Box::new(SeqExp::Call(
-                        "h".to_string(),
-                        vec![ImmExp::Var("x".to_string()), ImmExp::Var("z".to_string())],
-                        HashSet::from_iter(vec!["x".to_string(), "z".to_string()]),
-                    )),
-                    ann: HashSet::from_iter(vec!["x".to_string(), "y".to_string()]),
-                }),
-                ann: HashSet::from_iter(vec!["x".to_string()]),
-            }),
-            ann: HashSet::new(),
-        };
-        assert_eq!(sexp_hash, sexp_expt);
-    }
-
-    #[test]
-    fn liveness_test4() {
-        let sexp_orig = SeqExp::Let {
-            var: "x".to_string(),
-            bound_exp: Box::new(SeqExp::Prim2(
-                Prim2::Add,
-                ImmExp::Var("a".to_string()),
-                ImmExp::Var("b".to_string()),
-                (),
-            )),
-            body: Box::new(SeqExp::Let {
-                var: "y".to_string(),
-                bound_exp: Box::new(SeqExp::Call(
-                    "g".to_string(),
-                    vec![ImmExp::Var("b".to_string())],
-                    (),
-                )),
-                body: Box::new(SeqExp::Let {
-                    var: "z".to_string(),
-                    bound_exp: Box::new(SeqExp::If {
-                        cond: ImmExp::Var("b".to_string()),
-                        thn: Box::new(SeqExp::Prim2(
-                            Prim2::Add,
-                            ImmExp::Var("x".to_string()),
-                            ImmExp::Num(1),
-                            (),
-                        )),
-                        els: Box::new(SeqExp::Imm(ImmExp::Var("y".to_string()), ())),
-                        ann: (),
-                    }),
-                    body: Box::new(SeqExp::Call(
-                        "h".to_string(),
-                        vec![ImmExp::Var("z".to_string())],
-                        (),
-                    )),
-                    ann: (),
-                }),
-                ann: (),
-            }),
-            ann: (),
-        };
-        let sexp_hash = liveness(
-            &sexp_orig,
-            &HashSet::from_iter(vec!["a".to_string(), "b".to_string()]),
-            HashSet::new(),
-        );
-        let sexp_expt = SeqExp::Let {
-            var: "x".to_string(),
-            bound_exp: Box::new(SeqExp::Prim2(
-                Prim2::Add,
-                ImmExp::Var("a".to_string()),
-                ImmExp::Var("b".to_string()),
-                HashSet::new(),
-            )),
-            body: Box::new(SeqExp::Let {
-                var: "y".to_string(),
-                bound_exp: Box::new(SeqExp::Call(
-                    "g".to_string(),
-                    vec![ImmExp::Var("b".to_string())],
-                    HashSet::from_iter(vec!["x".to_string()]),
-                )),
-                body: Box::new(SeqExp::Let {
-                    var: "z".to_string(),
-                    bound_exp: Box::new(SeqExp::If {
-                        cond: ImmExp::Var("b".to_string()),
-                        thn: Box::new(SeqExp::Prim2(
-                            Prim2::Add,
-                            ImmExp::Var("x".to_string()),
-                            ImmExp::Num(1),
-                            HashSet::from_iter(vec!["x".to_string()]),
-                        )),
-                        els: Box::new(SeqExp::Imm(
-                            ImmExp::Var("y".to_string()),
-                            HashSet::from_iter(vec!["y".to_string()]),
-                        )),
-                        ann: HashSet::from_iter(vec!["x".to_string(), "y".to_string()]),
-                    }),
-                    body: Box::new(SeqExp::Call(
-                        "h".to_string(),
-                        vec![ImmExp::Var("z".to_string())],
-                        HashSet::from_iter(vec!["z".to_string()]),
-                    )),
-                    ann: HashSet::from_iter(vec!["x".to_string(), "y".to_string()]),
-                }),
-                ann: HashSet::from_iter(vec!["x".to_string()]),
-            }),
-            ann: HashSet::new(),
-        };
-        assert_eq!(sexp_hash, sexp_expt);
-    }
-}
-
 fn liveness_p<Ann1, Ann2>(p: &Prog<SeqExp<Ann1>, Ann2>) -> Prog<SeqExp<HashSet<String>>, Ann2>
 where
     Ann2: Clone,
@@ -1156,7 +912,7 @@ fn conflicts_helper<Ann>(
             var,
             bound_exp,
             body,
-            ann: _,
+            ann,
         } => {
             // Insert vertex
             g.insert_vertex(var.clone());
@@ -1191,9 +947,9 @@ fn conflicts_helper<Ann>(
                 }
             }
 
-            // Get body's conflict HashSet
+            // Get Let's conflict HashSet
             let mut conf_combs = Vec::new();
-            let conf_set = body.map_ann(&mut |ann| ann.0.clone()).ann();
+            let conf_set = ann.0.clone();
             for comb_vec in conf_set.iter().combinations(2) {
                 let comb_set: HashSet<&String> = HashSet::from_iter(comb_vec);
                 conf_combs.push(comb_set);

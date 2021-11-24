@@ -116,6 +116,11 @@ mk_test!(tail_rec, "tail_rec.diamond", "1000001");
 mk_test!(tree_call, "tree_call.diamond", "5\n-9");
 mk_test!(unused_fn, "unused_fn.diamond", "true");
 mk_test!(use_retval, "use_retval.diamond", "-1");
+mk_test!(
+    bigtest,
+    "bigtest.diamond",
+    "12352\n19980214\n19980214\n19980214"
+);
 
 // Condition Error
 mk_fail_test!(err_cond_if_0, "+if.boa", "if expected a boolean");
