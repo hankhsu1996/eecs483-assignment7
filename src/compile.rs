@@ -676,7 +676,7 @@ fn sequentialize(e: &Exp<u32>) -> SeqExp<()> {
                         els: _,
                         ann: _,
                     } => ImmExp::Var(format!("#call_{}_{}", ann, i)),
-                    Exp::Call(_, _, ann) => ImmExp::Var(format!("#call_{}_{}", ann, i)),
+                    Exp::Call(_, _, _) => ImmExp::Var(format!("#call_{}_{}", ann, i)),
                 })
                 .collect();
             let seq_call = SeqExp::Call(name.to_string(), args_new, ());
